@@ -46,7 +46,7 @@ const APP_VERSION = 'bodega-3.3.0';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
-  if (limpio === 'admin') return 'elhychristian@gmail.com';
+  if (limpio === 'admin') return 'sistemaaqualuan21@gmail.com';
   return limpio + DOMINIO_LOGIN;
 }
 
