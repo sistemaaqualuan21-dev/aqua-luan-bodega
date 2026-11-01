@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.2.7';
+const APP_VERSION = 'bodega-3.3.0';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -54,7 +54,9 @@ function emailDeUsuario(u) {
 const ETAPAS = {
   RECEPCION:  { n: '1', titulo: 'Recepción en planta',        corto: 'Recepción',    area: 'INSUMOS',   c: 'e1', desc: 'Check-in de todo lo que llega del proveedor: bultos, tapas y etiquetas.' },
   PRODUCCION: { n: '2', titulo: 'Salida a producción',        corto: 'Producción',   area: 'INSUMOS',   c: 'e2', desc: 'Lo que sale de la bodega de insumos hacia la línea de producción.' },
-  TERMINADO:  { n: '3', titulo: 'Bodega de producto terminado', corto: 'P. terminado', area: 'TERMINADO', c: 'e3', desc: 'Producto listo que sale de producción y entra a la bodega de terminado.' },
+  /* [PRODUCCIÓN→PT] Producción fabrica con la materia prima (se descuenta sola según la receta) y envía a P. terminado */
+  PRODUCIDO:  { n: '2➜3', titulo: 'Producción → P. terminado', corto: 'Producido', area: 'TERMINADO', c: 'e3', desc: 'Escribe cuántos productos terminados hiciste. La materia prima se descuenta sola según la receta.' },
+  TERMINADO:  { n: '3', titulo: 'Bodega de producto terminado', corto: 'P. terminado', area: 'TERMINADO', c: 'e3', desc: 'Confirma el producto terminado que envía Producción. Solo lo aceptado entra a la bodega.' },
   CARGA:      { n: '4', titulo: 'Carga al camión',            corto: 'Carga',        area: 'TERMINADO', c: 'e4', desc: 'Producto terminado que se carga al camión de cada asesor.' },
   DEVOLUCION: { n: '↩', titulo: 'Devolución del camión',      corto: 'Devolución',   area: 'TERMINADO', c: 'e5', desc: 'Producto LLENO que el asesor regresa sin vender.' },
   RETORNO_ENVASE: { n: '♻', titulo: 'Retorno de envases prestados', corto: 'Envases', area: 'ENVASES', c: 'ev', desc: 'Envases PRESTADOS que el asesor recuperó de los clientes y entrega vacíos en bodega.' },
@@ -89,6 +91,7 @@ const MOTIVOS_DANO = ['ROTO', 'DAÑADO', 'DERRAMADO', 'MAL SELLADO', 'CONTAMINAD
 const S = {
   user: null, perfil: null, nombre: '', roles: [], esAdmin: false, soloLectura: false,
   insumos: [], productos: [], movs: [], asesores: [], usuariosBod: [],
+  recetas: {}, recEdit: {}, /* [PRODUCCIÓN→PT] recetas por producto y borrador de edición (Admin) */
   tab: 'inicio', form: {}, modo: { RECEPCION: 'PROVEEDOR', CARGA: 'CARGA', PRODUCCION: 'INSUMOS', DANO: 'INSUMOS', AJUSTE: 'INSUMOS', stock: 'INSUMOS', admin: 'USUARIOS' },
   cuadre: { fecha: '', cache: {}, cargando: false, error: '' },
   hist: { desde: '', hasta: '', etapa: '', q: '', limite: 40 },
@@ -103,6 +106,10 @@ function haceDias(n) { const d = new Date(); d.setDate(d.getDate() - n); return 
 function fmtFecha(f) { if (!f) return '-'; const [y, m, d] = f.split('-'); return `${d}/${m}/${y}`; }
 function fmtHora(ms) { return ms ? new Date(ms).toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit' }) : ''; }
 function num(n) { return (Number(n) || 0).toLocaleString('es-EC'); }
+/* [PRECIO] Formato de dinero y redondeo (Recepción: precio unitario y total por producto) */
+function money(n) { return '$' + (Number(n) || 0).toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function precioTxt(n) { return '$' + (Number(n) || 0).toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 4 }); }
+function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 function slug(s) { return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, ''); }
 function upper(s, max = 120) { return String(s || '').trim().replace(/\s+/g, ' ').slice(0, max).toUpperCase(); }
 function msDe(m) { return m.creadoEn?.toMillis?.() || m.creadoLocal || 0; }
@@ -200,6 +207,12 @@ function iniciarListeners() {
       .sort((a, b) => a.nombre.localeCompare(b.nombre));
     programarRefresco();
   }, onErr('productos')));
+  /* [PRODUCCIÓN→PT] Recetas: qué materia prima se gasta por 1 unidad de cada producto */
+  S.unsubs.push(db.collection('bodRecetas').onSnapshot(snap => {
+    S.recetas = {};
+    snap.docs.forEach(d => { const r = d.data(); if (r.producto) S.recetas[r.producto] = (r.insumos || []).filter(x => x.id && Number(x.cantidad) > 0); });
+    programarRefresco();
+  }, onErr('recetas')));
   S.unsubs.push(db.collection('bodMovimientos').onSnapshot({ includeMetadataChanges: true }, snap => {
     S.movs = snap.docs.map(d => ({ _id: d.id, _pend: d.metadata.hasPendingWrites, ...d.data() }));
     programarRefresco();
@@ -245,6 +258,8 @@ function calcularStock() {
   const E = n => (env[n] = env[n] || { ret: 0, prod: 0, dano: 0, aj: 0, stock: 0 });
   const I = id => (ins[id] = ins[id] || { rec: 0, prod: 0, dano: 0, perd: 0, aj: 0, stock: 0 });
   const P = n => (pt[n] = pt[n] || { term: 0, carga: 0, dev: 0, dano: 0, aj: 0, stock: 0 });
+  /* [PRODUCCIÓN→PT] Materia prima EN PRODUCCIÓN = lo que producción recibió de bodega − lo consumido según receta ± ajuste */
+  const lin = {}, L = id => (lin[id] = lin[id] || { rec: 0, cons: 0, aj: 0, stock: 0 });
   for (const m of S.movs) {
     if (m.anulado) continue;
     if (m.entrega?.estado === 'CANCELADA') continue; /* [ENTREGA] envío cancelado por Recepción: no salió */
@@ -257,21 +272,28 @@ function calcularStock() {
             const d = Math.min(q, (Number(m.entrega?.danado?.[it.id]) || 0) + (Number(m.entrega?.roto?.[it.id]) || 0)); /* + lo que volvió roto */
             const r = Math.min(q - d, Number(m.entrega?.encontrado?.[it.id]) || 0);   /* faltante que apareció en bodega: vuelve al stock */
             const p = Math.min(q - d - r, Number(m.entrega?.perdido?.[it.id]) || 0);  /* faltante que no apareció: pérdida */
-            I(it.id).prod += q - d - r - p; I(it.id).dano += d; I(it.id).perd += p; }
+            I(it.id).prod += q - d - r - p; I(it.id).dano += d; I(it.id).perd += p;
+            /* [PRODUCCIÓN→PT] Llega a producción: si lo envió Recepción, solo lo que Producción confirmó recibido */
+            if (m.entrega?.origen === 'RECEPCION') L(it.id).rec += Number(m.entrega.recibido?.[it.id]) || 0;
+            else L(it.id).rec += q - d - r - p; }
           break;
         case 'RETORNO_ENVASE': E(it.nombre).ret += q; break;
         case 'TERMINADO': P(it.nombre).term += q; break;
+        /* [PRODUCCIÓN→PT] Entra a la bodega de terminado solo lo que P. terminado aceptó */
+        case 'PRODUCIDO': if (m.envioPT && m.envioPT.estado !== 'PENDIENTE') P(it.nombre).term += Number(m.envioPT.recibido?.[it.nombre]) || 0; break;
         case 'CARGA': P(it.nombre).carga += q; break;
         case 'DEVOLUCION': P(it.nombre).dev += q; break;
         case 'DANO': if (m.area === 'INSUMOS') I(it.id).dano += q; else if (m.area === 'ENVASES') E(it.nombre).dano += q; else P(it.nombre).dano += q; break;
-        case 'AJUSTE': if (m.area === 'INSUMOS') I(it.id).aj += q; else if (m.area === 'ENVASES') E(it.nombre).aj += q; else P(it.nombre).aj += q; break;
+        case 'AJUSTE': if (m.area === 'INSUMOS') I(it.id).aj += q; else if (m.area === 'ENVASES') E(it.nombre).aj += q; else if (m.area === 'LINEA') L(it.id).aj += q; else P(it.nombre).aj += q; break;
       }
     }
+    if (m.etapa === 'PRODUCIDO') for (const c of (m.consumo || [])) L(c.id).cons += Number(c.cantidad) || 0; /* [PRODUCCIÓN→PT] */
   }
+  Object.values(lin).forEach(s => s.stock = Math.round((s.rec - s.cons + s.aj) * 10000) / 10000);
   Object.values(ins).forEach(s => s.stock = s.rec - s.prod - s.dano - s.perd + s.aj); /* [ENTREGA] − pérdida */
   Object.values(pt).forEach(s => s.stock = s.term - s.carga + s.dev - s.dano + s.aj);
   Object.values(env).forEach(s => s.stock = s.ret - s.prod - s.dano + s.aj);
-  return { ins, pt, env };
+  return { ins, pt, env, lin };
 }
 function insumosActivos() {
   return S.insumos.filter(i => i.activo !== false).sort((a, b) =>
@@ -282,17 +304,18 @@ function insumosActivos() {
 const ENVASES_PRESTAMO = ['ENVASE AZUL', 'ENVASE LLAVE', 'OFICINA - ENVASE'];
 function itemsDeArea(area, stock) {
   if (area === 'INSUMOS') return insumosActivos().map(i => ({ id: i.id, nombre: i.nombre, categoria: i.categoria, stock: stock.ins[i.id]?.stock || 0, minimo: Number(i.minimo) || 0 }));
+  if (area === 'LINEA') return insumosActivos().map(i => ({ id: i.id, nombre: i.nombre, categoria: i.categoria, stock: stock.lin[i.id]?.stock || 0, minimo: 0 })); /* [PRODUCCIÓN→PT] */
   if (area === 'ENVASES') return ENVASES_PRESTAMO.map(n => ({ id: n, nombre: n, stock: stock.env[n]?.stock || 0, minimo: 0 }));
   return S.productos.map(p => ({ id: p.nombre, nombre: p.nombre, stock: stock.pt[p.nombre]?.stock || 0, minimo: 0 }));
 }
-function nombreArea(a) { return a === 'INSUMOS' ? 'Insumos' : a === 'ENVASES' ? 'Envases vacíos' : 'Producto terminado'; }
+function nombreArea(a) { return a === 'INSUMOS' ? 'Insumos' : a === 'ENVASES' ? 'Envases vacíos' : a === 'LINEA' ? 'Materia prima en producción' : 'Producto terminado'; }
 
 /* ══════════════════════════ NAVEGACIÓN ══════════════════════════ */
 const SCREENS = {
   inicio:     { label: 'Inicio',            render: renderInicio },
   RECEPCION:  { label: '1 · Recepción',     form: true, rol: 'RECEPCION' },
   PRODUCCION: { label: '2 · Producción',    form: true, rol: 'PRODUCCION' },
-  TERMINADO:  { label: '3 · P. terminado',  form: true, rol: 'TERMINADO' },
+  TERMINADO:  { label: '3 · P. terminado',  render: renderTerminado, rol: 'TERMINADO' }, /* [PRODUCCIÓN→PT] sin registro manual: confirma envíos de Producción */
   CARGA:      { label: '4 · Carga camión',  form: true, rol: 'CARGA' },
   DANO:       { label: '⚠ Daños',           form: true },
   stock:      { label: 'Stock',             render: renderStock },
@@ -353,12 +376,12 @@ function renderInicio() {
     </div>
   </div>
   ${sinCatalogo && S.esAdmin ? `<div class="msg warn">Todavía no hay catálogo de insumos. Ve a <b>⚙ Admin → Catálogo</b> y pulsa “Cargar lista inicial”.</div>` : ''}
-  ${avisoEntregasInicio()}
+  ${avisoEntregasInicio()}${avisoPTInicio()}
   ${quick ? `<div class="quick" style="margin-bottom:12px">${quick}</div>` : ''}
   <div class="kpis">
     <div class="kpi" style="border-color:var(--e1)"><span>Recibido hoy</span><b>${num(tot('RECEPCION'))}</b><small>unidades de insumos</small></div>
     <div class="kpi" style="border-color:var(--e2)"><span>A producción hoy</span><b>${num(tot('PRODUCCION'))}</b><small>unidades de insumos</small></div>
-    <div class="kpi" style="border-color:var(--e3)"><span>Terminado hoy</span><b>${num(tot('TERMINADO'))}</b><small>unidades producidas</small></div>
+    <div class="kpi" style="border-color:var(--e3)"><span>Terminado hoy</span><b>${num(tot('TERMINADO') + tot('PRODUCIDO'))}</b><small>unidades producidas</small></div>
     <div class="kpi" style="border-color:var(--e4)"><span>Cargado hoy</span><b>${num(tot('CARGA') - tot('DEVOLUCION'))}</b><small>neto (carga − devolución)</small></div>
     <div class="kpi" style="border-color:var(--ev)"><span>Envases recuperados hoy</span><b>${num(tot('RETORNO_ENVASE'))}</b><small>préstamos devueltos</small></div>
     <div class="kpi" style="border-color:var(--ed)"><span>Daños hoy</span><b>${num(tot('DANO'))}</b><small>unidades</small></div>
@@ -378,15 +401,17 @@ function cfgDe(tab) {
       /* [ENTREGA] Recepción puede además ENVIAR insumos a producción (producción confirma lo que recibe) */
       const segR = { modo: 'RECEPCION', ops: [['PROVEEDOR', '1 · Recibir del proveedor'], ['ENVIO', '➜ Enviar a producción']] };
       if (S.modo.RECEPCION === 'ENVIO') return { key: 'ENVIO_PROD', etapa: 'PRODUCCION', area: 'INSUMOS', limitar: true, envio: true, campos: ['fecha', 'nota'], seg: segR };
-      return { key: 'RECEPCION', etapa: 'RECEPCION', area: 'INSUMOS', limitar: false, campos: ['proveedor', 'documento', 'fecha', 'nota'], seg: segR };
+      return { key: 'RECEPCION', etapa: 'RECEPCION', area: 'INSUMOS', limitar: false, precio: true, campos: ['proveedor', 'documento', 'fecha', 'nota'], seg: segR };
     }
     case 'PRODUCCION': {
+      const segP = { modo: 'PRODUCCION', ops: [['INSUMOS', 'Insumos'], ['ENVASES', 'Envases vacíos'], ['PRODUCIR', '➜ Enviar a P. terminado']] };
+      /* [PRODUCCIÓN→PT] Producción registra lo fabricado; la materia prima se descuenta sola según la receta */
+      if (S.modo.PRODUCCION === 'PRODUCIR') return { key: 'PRODUCIR', etapa: 'PRODUCIDO', area: 'TERMINADO', limitar: false, produce: true, campos: ['fecha', 'nota'], seg: segP };
       const env = S.modo.PRODUCCION === 'ENVASES';
       return { key: env ? 'PRODUCCION_ENV' : 'PRODUCCION', etapa: 'PRODUCCION', area: env ? 'ENVASES' : 'INSUMOS', limitar: true,
         campos: !env && requiereAvisoRecepcion() ? ['autoriza', 'motivoSalida', 'fecha', 'nota'] : ['fecha', 'nota'],
-        seg: { modo: 'PRODUCCION', ops: [['INSUMOS', 'Insumos'], ['ENVASES', 'Envases vacíos']] } };
+        seg: segP };
     }
-    case 'TERMINADO':  return { key: 'TERMINADO', etapa: 'TERMINADO', area: 'TERMINADO', limitar: false, campos: ['fecha', 'nota'] };
     case 'CARGA': {
       const segC = { modo: 'CARGA', ops: [['CARGA', '4 · Cargar'], ['DEVOLUCION', '↩ Devolución'], ['RETORNO_ENVASE', '♻ Envases']] };
       if (S.modo.CARGA === 'RETORNO_ENVASE') return { key: 'RETORNO_ENVASE', etapa: 'RETORNO_ENVASE', area: 'ENVASES', limitar: false, campos: ['asesor', 'fecha', 'nota'], seg: segC };
@@ -401,18 +426,20 @@ function cfgDe(tab) {
     case 'AJUSTE': {
       const a = S.modo.AJUSTE;
       return { key: 'AJUSTE_' + a, etapa: 'AJUSTE', area: a, conteo: true, campos: ['fecha', 'nota'],
-        seg: { modo: 'AJUSTE', ops: [['INSUMOS', 'Insumos'], ['TERMINADO', 'P. terminado'], ['ENVASES', 'Envases vacíos']] } };
+        seg: { modo: 'AJUSTE', ops: [['INSUMOS', 'Insumos'], ['LINEA', 'En producción'], ['TERMINADO', 'P. terminado'], ['ENVASES', 'Envases vacíos']] } };
     }
   }
 }
 function estadoForm(key) {
   if (!S.form[key]) S.form[key] = { qty: {}, campos: { fecha: hoy(), motivo: 'ROTO' }, q: '' };
+  if (!S.form[key].precio) S.form[key].precio = {}; /* [PRECIO] */
   return S.form[key];
 }
 function firmaFormulario(tab) {
   const c = cfgDe(tab);
-  const ids = c.area === 'INSUMOS' ? insumosActivos().map(i => i.id + i.nombre) : S.productos.map(p => p.nombre + c.area);
-  return c.key + '|' + ids.join(',') + '|' + S.asesores.join(',') + '|' + S.errorReglas + '|' + firmaEntregas(tab);
+  const ids = (c.area === 'INSUMOS' || c.area === 'LINEA') ? insumosActivos().map(i => i.id + i.nombre) : S.productos.map(p => p.nombre + c.area);
+  return c.key + '|' + ids.join(',') + '|' + S.asesores.join(',') + '|' + S.errorReglas + '|' + firmaEntregas(tab) +
+    (c.produce ? '|' + JSON.stringify(S.recetas) + '|' + firmaPT() : ''); /* [PRODUCCIÓN→PT] */
 }
 function refrescarFormulario() {
   if (firmaFormulario(S.tab) !== S.firma) { renderMain(); return; }
@@ -426,6 +453,7 @@ function refrescarFormulario() {
   pintarResumen();
 }
 function etiquetaStock(c, it) {
+  if (c.produce) { const r = recetaDe(it.nombre); return r.length ? `Receta: ${r.length} insumo(s) por unidad` : '<span style="color:var(--red)">Sin receta — pídela al administrador</span>'; } /* [PRODUCCIÓN→PT] */
   if (c.conteo) return `Sistema: <b>${num(it.stock)}</b>`;
   if (c.limitar) return `Disponible: <b>${num(it.stock)}</b>`;
   return `En bodega: ${num(it.stock)}${it.minimo ? ` · mín ${num(it.minimo)}` : ''}`;
@@ -466,6 +494,7 @@ function campoHTML(c, f, campo) {
 function htmlFormulario(tab) {
   const c = cfgDe(tab), f = estadoForm(c.key), st = calcularStock();
   const e = c.envio ? { ...ETAPAS.PRODUCCION, n: '➜', titulo: 'Enviar a producción', desc: 'Recepción entrega insumos a la línea de producción. Producción confirmará producto por producto lo que recibe.' } : ETAPAS[c.etapa];
+  let avisoProd = c.produce ? `<div class="msg info">Escribe cuántas unidades de cada producto terminado hiciste. La materia prima se descuenta <b>sola</b> según la receta, de lo que tienes en producción. El envío queda <b>pendiente</b> hasta que Producto terminado lo confirme.</div>` : ''; /* [PRODUCCIÓN→PT] */
   const items = itemsDeArea(c.area, st);
   let aviso = '';
   if (c.etapa === 'CARGA') aviso = `<div class="msg info">Solo producto lleno que sale de la bodega de terminado. Los envases vacíos de CAMBIO <b>no</b> se registran.</div>`;
@@ -475,33 +504,36 @@ function htmlFormulario(tab) {
   if (c.envio) aviso = `<div class="msg info">Lo que envíes sale de la bodega de insumos y queda <b>pendiente de confirmar</b> por Producción. Si algo llega dañado, Producción lo devuelve y tú confirmas que lo recibiste.</div>`;
   else if (c.etapa === 'PRODUCCION' && c.area === 'INSUMOS' && requiereAvisoRecepcion()) aviso = `<div class="msg warn">Estás sacando insumos de la bodega de <b>Recepción</b>. Al guardar, Recepción recibirá un aviso para confirmar la salida.</div>`;
   if (c.etapa === 'TERMINADO') aviso = `<div class="msg info">Estos son los mismos productos de la app del asesor. Esta entrada también suma al Inventario del dashboard.</div>`;
-  if (c.etapa === 'AJUSTE') aviso = `<div class="msg warn">Escribe solo lo que contaste. Lo que dejes vacío no se toca. ${c.area === 'TERMINADO' ? 'La diferencia también se registra en el Inventario del dashboard.' : ''}</div>`;
+  if (avisoProd) aviso = avisoProd;
+  if (c.etapa === 'AJUSTE' && c.area === 'LINEA') aviso = `<div class="msg warn">Escribe lo que contaste físicamente de materia prima que está en la línea de producción (sin usar). Lo que dejes vacío no se toca.</div>`;
+  else if (c.etapa === 'AJUSTE') aviso = `<div class="msg warn">Escribe solo lo que contaste. Lo que dejes vacío no se toca. ${c.area === 'TERMINADO' ? 'La diferencia también se registra en el Inventario del dashboard.' : ''}</div>`;
   const seg = c.seg ? `<div class="seg" style="margin-bottom:12px">${c.seg.ops.map(([v, l]) => `<button class="${S.modo[c.seg.modo] === v ? 'on' : ''}" onclick="setModo('${c.seg.modo}','${v}')">${esc(l)}</button>`).join('')}</div>` : '';
   const resumenCarga = (tab === 'CARGA') ? htmlResumenCargas() : '';
   let lista;
   if (!items.length) {
     lista = `<div class="empty">${c.area === 'INSUMOS' ? 'No hay insumos en el catálogo.' + (S.esAdmin ? ' Cárgalos en ⚙ Admin → Catálogo.' : ' Pide al administrador que cargue el catálogo.') : 'No hay productos activos en el catálogo de la app de pedidos.'}</div>`;
   } else {
-    let grupos = c.area === 'INSUMOS' ? CATEGORIAS.map(cat => [cat, items.filter(i => i.categoria === cat)]).filter(g => g[1].length) : [['PRODUCTOS', items]];
+    let grupos = (c.area === 'INSUMOS' || c.area === 'LINEA') ? CATEGORIAS.map(cat => [cat, items.filter(i => i.categoria === cat)]).filter(g => g[1].length) : [['PRODUCTOS', items]];
     lista = `<input class="in picker-search" placeholder="Buscar…" value="${esc(f.q)}" oninput="filtrar('${c.key}',this.value)">` +
       grupos.map(([cat, arr]) => `<div class="cat" data-cat><div class="cat-title"><span>${esc((tab === 'RECEPCION' || tab === 'PRODUCCION' || tab === 'DANO') && CATEGORIAS.includes(cat) ? cat + ' POR UNIDADES' : cat)}</span><span>${arr.length}</span></div>
         ${arr.map(it => {
           const v = f.qty[it.id];
           const visible = !f.q || it.nombre.includes(f.q.toUpperCase());
           const low = (it.minimo > 0 && it.stock <= it.minimo) || it.stock < 0;
+          const dis = c.produce && !recetaDe(it.nombre).length ? 'disabled' : ''; /* [PRODUCCIÓN→PT] sin receta no se puede producir */
           return `<div class="item" data-id="${esc(it.id)}" data-nm="${esc(it.nombre)}" ${visible ? '' : 'style="display:none"'}>
             <div class="nm">${esc(it.nombre)}<small class="${low ? 'low' : ''}">${etiquetaStock(c, it)}</small></div>
             <div class="qty">
-              ${c.conteo ? '' : `<button type="button" onclick="paso('${c.key}',this,-1)">−</button>`}
-              <input type="number" inputmode="numeric" min="0" step="1" value="${v ?? ''}" placeholder="${c.conteo ? 'conteo' : '0'}"
+              ${c.conteo ? '' : `<button type="button" ${dis} onclick="paso('${c.key}',this,-1)">−</button>`}
+              <input type="number" inputmode="numeric" min="0" step="1" value="${v ?? ''}" placeholder="${c.conteo ? 'conteo' : '0'}" ${dis}
                 class="${(v !== undefined && (c.conteo || v > 0)) ? 'has' : ''} ${c.limitar && v > it.stock ? 'over' : ''}"
                 oninput="setQty('${c.key}',this)">
-              ${c.conteo ? '' : `<button type="button" onclick="paso('${c.key}',this,1)">+</button>`}
-            </div></div>`;
+              ${c.conteo ? '' : `<button type="button" ${dis} onclick="paso('${c.key}',this,1)">+</button>`}
+            </div>${c.precio ? htmlPrecioItem(c, f, it) : ''}</div>`;
         }).join('')}</div>`).join('');
   }
-  const soloLect = S.soloLectura || (c.etapa !== 'DANO' && c.etapa !== 'AJUSTE' && !puede(c.envio ? 'RECEPCION' : c.etapa === 'DEVOLUCION' || c.etapa === 'RETORNO_ENVASE' ? 'CARGA' : c.etapa));
-  const pendEnt = (tab === 'RECEPCION' || tab === 'PRODUCCION') ? htmlPendientesEntrega(tab) : '';
+  const soloLect = S.soloLectura || (c.etapa !== 'DANO' && c.etapa !== 'AJUSTE' && !puede(c.envio ? 'RECEPCION' : c.produce ? 'PRODUCCION' : c.etapa === 'DEVOLUCION' || c.etapa === 'RETORNO_ENVASE' ? 'CARGA' : c.etapa));
+  const pendEnt = (tab === 'RECEPCION' || tab === 'PRODUCCION') ? htmlPendientesEntrega(tab) + (c.produce ? htmlEnviosPTProduccion() : '') : '';
   return `${pendEnt}
   <div class="card">
     <div class="step-head"><div class="step-num" style="background:var(--${e.c}bg);color:var(--${e.c})">${esc(e.n)}</div>
@@ -514,7 +546,27 @@ function htmlFormulario(tab) {
       <button class="btn btn-out btn-sm" onclick="limpiarForm('${c.key}')">Limpiar</button>
       <button class="btn btn-main" id="btnRevisar" onclick="revisar('${tab}')">Revisar y guardar</button></div>` : ''}
   </div>
+  ${c.produce ? '<div class="card" id="consumoProd"></div>' : ''}
   ${resumenCarga}`;
+}
+/* [PRECIO] Recepción: precio unitario y total por producto, para cuadrar la factura del proveedor */
+function htmlPrecioItem(c, f, it) {
+  const p = f.precio[it.id], q = f.qty[it.id] || 0;
+  return `<div class="pr"><label>P. unit. $</label>
+    <input type="number" inputmode="decimal" min="0" step="any" value="${p ?? ''}" placeholder="0.00" class="${p > 0 ? 'has' : ''}" oninput="setPrecio('${c.key}',this)">
+    <span class="pr-tot">Total: <b>${q && p ? money(q * p) : '$0,00'}</b></span></div>`;
+}
+function totalLinea(f, id) { return r2((f.qty[id] || 0) * (f.precio[id] || 0)); }
+function pintarTotalItem(key, row) {
+  if (!row) return; const t = row.querySelector('.pr-tot b'); if (!t) return;
+  t.textContent = money(totalLinea(estadoForm(key), row.dataset.id));
+}
+function setPrecio(key, inp) {
+  const row = inp.closest('.item'), id = row.dataset.id, f = estadoForm(key);
+  const n = Number(String(inp.value).replace(',', '.'));
+  if (inp.value === '' || !(n > 0)) delete f.precio[id]; else f.precio[id] = Math.round(n * 10000) / 10000;
+  inp.classList.toggle('has', f.precio[id] > 0);
+  pintarTotalItem(key, row); pintarResumen();
 }
 function htmlResumenCargas() {
   const f = hoy(), por = {};
@@ -533,7 +585,9 @@ function pintarResumen() {
   const c = cfgDe(S.tab), f = estadoForm(c.key);
   const vals = Object.values(f.qty).filter(v => v !== undefined && (c.conteo || v > 0));
   el.innerHTML = c.conteo ? `<b>${vals.length}</b> ítem(s) contados` : `<b>${num(vals.reduce((a, b) => a + b, 0))}</b> unidades · ${vals.length} ítem(s)`;
+  if (c.precio) el.innerHTML += ` · Total: <b>${money(Object.keys(f.qty).reduce((a, id) => a + totalLinea(f, id), 0))}</b>`; /* [PRECIO] */
   const b = $('#btnRevisar'); if (b) b.disabled = vals.length === 0;
+  const cp = $('#consumoProd'); if (cp && c.produce) cp.innerHTML = htmlConsumo(consumoDe(f.qty), calcularStock(), true); /* [PRODUCCIÓN→PT] */
 }
 
 /* Handlers del formulario (globales, usados desde el HTML) */
@@ -550,6 +604,7 @@ function setQty(key, inp) {
   else { const n = Math.max(0, Math.floor(Number(raw) || 0)); if (!c.conteo && n === 0) delete f.qty[id]; else f.qty[id] = n; }
   const it = itemsDeArea(c.area, calcularStock()).find(i => i.id === id);
   if (it) marcarInput(c, it, inp, f.qty[id]);
+  if (c.precio) pintarTotalItem(key, inp.closest('.item')); /* [PRECIO] */
   pintarResumen();
 }
 function paso(key, btn, d) {
@@ -560,7 +615,7 @@ function paso(key, btn, d) {
 }
 function limpiarForm(key) {
   if (!confirm('¿Borrar todas las cantidades de este formulario?')) return;
-  const f = estadoForm(key); f.qty = {}; f.campos.nota = ''; renderMain();
+  const f = estadoForm(key); f.qty = {}; f.precio = {}; f.campos.nota = ''; renderMain();
 }
 
 /* ── Revisar → confirmar → guardar ─────────────────────────────────── */
@@ -578,6 +633,13 @@ function revisar(tab) {
   if (c.campos.includes('motivoSalida') && !valorMotivoSalida(f)) errores.push('Falta el motivo de la salida.');
   if (c.limitar) elegidos.filter(it => f.qty[it.id] > it.stock).forEach(it =>
     errores.push(`${it.categoria ? it.categoria + ' · ' : ''}${it.nombre}: pides ${num(f.qty[it.id])} pero solo hay ${num(it.stock)}.`));
+  /* [PRODUCCIÓN→PT] Receta obligatoria y no consumir más materia prima de la que hay en producción */
+  if (c.produce) {
+    elegidos.filter(it => !recetaDe(it.nombre).length).forEach(it => errores.push(`${it.nombre}: no tiene receta. Pide al administrador que la cree en ⚙ Admin → Recetas.`));
+    const cons = consumoDe(f.qty);
+    Object.entries(cons).forEach(([id, q]) => { const disp = st.lin[id]?.stock || 0, ins = S.insumos.find(x => x.id === id) || { nombre: id };
+      if (q > disp) errores.push(`${ins.categoria ? ins.categoria + ' · ' : ''}${ins.nombre}: se necesitan ${num(q)} pero en producción solo hay ${num(disp)}.`); });
+  }
   const ajustes = c.conteo ? elegidos.map(it => ({ it, delta: f.qty[it.id] - it.stock })).filter(x => x.delta !== 0) : null;
   if (c.conteo && elegidos.length && !ajustes.length) errores.push('Todo lo contado coincide con el sistema; no hay nada que ajustar.');
   if (errores.length) { openModal(`<h3>Revisa antes de guardar</h3>${errores.map(t => `<div class="msg err">${esc(t)}</div>`).join('')}<div class="actions"><button class="btn btn-main btn-block" onclick="closeModal()">Entendido</button></div>`); return; }
@@ -592,14 +654,19 @@ function revisar(tab) {
   }
   const filas = c.conteo
     ? ajustes.map(({ it, delta }) => `<tr><td>${esc(it.nombre)}${it.categoria ? `<br><small style="color:var(--muted)">${esc(it.categoria)}</small>` : ''}</td><td class="n">${num(it.stock)}</td><td class="n">${num(f.qty[it.id])}</td><td class="n" style="font-weight:800;color:${delta < 0 ? 'var(--red)' : 'var(--ok)'}">${delta > 0 ? '+' : ''}${num(delta)}</td></tr>`).join('')
-    : elegidos.map(it => `<tr><td>${esc(it.nombre)}${it.categoria ? `<br><small style="color:var(--muted)">${esc(it.categoria)}</small>` : ''}</td><td class="n"><b>${num(f.qty[it.id])}</b></td></tr>`).join('');
+    : elegidos.map(it => `<tr><td>${esc(it.nombre)}${it.categoria ? `<br><small style="color:var(--muted)">${esc(it.categoria)}</small>` : ''}</td><td class="n"><b>${num(f.qty[it.id])}</b></td>${c.precio ? `<td class="n">${f.precio[it.id] ? precioTxt(f.precio[it.id]) : '<span style="color:var(--amber)">—</span>'}</td><td class="n"><b>${money(totalLinea(f, it.id))}</b></td>` : ''}</tr>`).join('');
   const total = elegidos.reduce((a, it) => a + (f.qty[it.id] || 0), 0);
+  /* [PRECIO] Total de la factura y aviso de productos sin precio */
+  const totalValor = c.precio ? r2(elegidos.reduce((a, it) => a + totalLinea(f, it.id), 0)) : 0;
+  const sinPrecio = c.precio ? elegidos.filter(it => !f.precio[it.id]) : [];
+  if (sinPrecio.length) avisoDev += `<div class="msg warn">Sin precio unitario: ${sinPrecio.map(it => esc(it.nombre)).join(', ')}. Se guardarán con total $0,00.</div>`;
   /* [ENTREGA] Avisos de confirmación entre Recepción y Producción */
   const tituloEnvio = c.envio ? '➜ · Enviar a producción' : '';
   const sacaSolo = !c.envio && c.etapa === 'PRODUCCION' && c.area === 'INSUMOS' && requiereAvisoRecepcion();
   if (sacaSolo) avisoDev += `<div class="msg warn"><b>¿Está seguro que va a sacar estos productos de la bodega de Recepción?</b><br>Recepción recibirá un aviso para confirmar esta salida.</div>`;
   if (c.envio) avisoDev += `<div class="msg info">Producción deberá confirmar producto por producto lo que recibe. Quedará <b>pendiente</b> hasta entonces.</div>`;
-  const txtBoton = sacaSolo ? 'Sí, sacar y avisar a Recepción' : c.envio ? 'Enviar a producción' : 'Confirmar y guardar';
+  if (c.produce) avisoDev += htmlConsumo(consumoDe(f.qty), st, false) + `<div class="msg info">Quedará <b>pendiente</b> hasta que Producto terminado confirme lo que recibe.</div>`; /* [PRODUCCIÓN→PT] */
+  const txtBoton = sacaSolo ? 'Sí, sacar y avisar a Recepción' : c.envio ? 'Enviar a producción' : c.produce ? 'Enviar a P. terminado' : 'Confirmar y guardar';
   openModal(`
     <h3>${tituloEnvio ? tituloEnvio : esc(e.n) + ' · ' + esc(e.titulo)}${c.etapa === 'DANO' || c.etapa === 'AJUSTE' || (c.etapa === 'PRODUCCION' && c.area === 'ENVASES') ? ' — ' + nombreArea(c.area) : ''}</h3>
     <div class="mov-meta">Fecha: <b>${fmtFecha(f.campos.fecha)}</b>
@@ -609,8 +676,9 @@ function revisar(tab) {
       ${c.campos.includes('autoriza') ? `<br>Autorizó: <b>${esc(valorAutoriza(f))}</b> · Motivo: <b>${esc(valorMotivoSalida(f))}</b>` : ''}
       ${f.campos.nota ? `<br>Obs.: ${esc(upper(f.campos.nota, 300))}` : ''}</div>
     ${avisoDev}
-    <div class="tbl-wrap"><table class="tbl"><thead><tr>${c.conteo ? '<th>Ítem</th><th class="n">Sistema</th><th class="n">Conteo</th><th class="n">Ajuste</th>' : '<th>Ítem</th><th class="n">Cantidad</th>'}</tr></thead>
-      <tbody>${filas}</tbody>${c.conteo ? '' : `<tfoot><tr><td><b>TOTAL</b></td><td class="n"><b>${num(total)}</b></td></tr></tfoot>`}</table></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr>${c.conteo ? '<th>Ítem</th><th class="n">Sistema</th><th class="n">Conteo</th><th class="n">Ajuste</th>' : '<th>Ítem</th><th class="n">Cantidad</th>' + (c.precio ? '<th class="n">P. unit.</th><th class="n">Total</th>' : '')}</tr></thead>
+      <tbody>${filas}</tbody>${c.conteo ? '' : `<tfoot><tr><td><b>TOTAL</b></td><td class="n"><b>${num(total)}</b></td>${c.precio ? `<td></td><td class="n"><b style="font-size:15px">${money(totalValor)}</b></td>` : ''}</tr></tfoot>`}</table></div>
+    ${c.precio ? `<div class="msg info">Total de la factura: <b style="font-size:16px">${money(totalValor)}</b>. Compáralo con la factura del proveedor antes de confirmar.</div>` : ''}
     <div class="actions"><button class="btn btn-out" style="flex:1" onclick="closeModal()">Corregir</button>
       <button class="btn btn-main" style="flex:2" id="btnConfirmar" onclick="confirmarGuardar('${tab}')">${txtBoton}</button></div>`);
 }
@@ -624,7 +692,8 @@ function confirmarGuardar(tab) {
     items = elegidos.map(it => ({ id: it.id, nombre: it.nombre, ...(it.categoria ? { categoria: it.categoria } : {}), sistema: it.stock, conteo: f.qty[it.id], cantidad: f.qty[it.id] - it.stock }))
       .filter(x => x.cantidad !== 0);
   } else {
-    items = elegidos.map(it => ({ id: it.id, nombre: it.nombre, ...(it.categoria ? { categoria: it.categoria } : {}), cantidad: f.qty[it.id] }));
+    items = elegidos.map(it => ({ id: it.id, nombre: it.nombre, ...(it.categoria ? { categoria: it.categoria } : {}), cantidad: f.qty[it.id],
+      ...(c.precio ? { precioUnitario: f.precio[it.id] || 0, total: totalLinea(f, it.id) } : {}) })); /* [PRECIO] */
   }
   const doc = {
     etapa: c.etapa, area: c.area, fecha: f.campos.fecha, items,
@@ -634,6 +703,12 @@ function confirmarGuardar(tab) {
     creadoEn: TS(), creadoLocal: Date.now(), anulado: false, app: APP_VERSION
   };
   if (c.campos.includes('proveedor')) { doc.proveedor = upper(f.campos.proveedor, 80); doc.documento = upper(f.campos.documento, 40); }
+  if (c.precio) doc.valorTotal = r2(items.reduce((a, i) => a + (i.total || 0), 0)); /* [PRECIO] total de la factura */
+  /* [PRODUCCIÓN→PT] Materia prima consumida (según receta) y envío pendiente de confirmar por P. terminado */
+  if (c.produce) {
+    doc.consumo = Object.entries(consumoDe(f.qty)).map(([id, q]) => { const i = S.insumos.find(x => x.id === id) || {}; return { id, nombre: i.nombre || id, categoria: i.categoria || '', cantidad: q }; });
+    doc.envioPT = { estado: 'PENDIENTE' };
+  }
   if (c.campos.includes('asesor')) doc.ruta = f.campos.asesor;
   if (c.etapa === 'DANO') doc.motivo = f.campos.motivo || 'OTRO';
   /* [ENTREGA] Recepción envía → Producción confirma; Producción saca sola → Recepción confirma */
@@ -654,8 +729,9 @@ function confirmarGuardar(tab) {
   const offline = !navigator.onLine;
   openModal(`<h3>✓ Guardado</h3>
     <div class="msg ${offline ? 'warn' : 'ok'}">${offline ? 'Estás sin internet: quedó guardado en este celular y se enviará solo al volver la conexión. No cierres sesión.' : 'Registro enviado.'}</div>
-    <div class="mov-meta">${esc(c.envio ? 'Envío a producción' : ETAPAS[c.etapa].titulo)} · ${items.length} ítem(s)${doc.totalUnidades ? ' · ' + num(doc.totalUnidades) + ' unidades' : ''}${doc.ruta ? '<br>Asesor: <b>' + esc(doc.ruta) + '</b>' : ''}</div>
+    <div class="mov-meta">${esc(c.envio ? 'Envío a producción' : ETAPAS[c.etapa].titulo)} · ${items.length} ítem(s)${doc.totalUnidades ? ' · ' + num(doc.totalUnidades) + ' unidades' : ''}${doc.valorTotal !== undefined ? ' · Total: <b>' + money(doc.valorTotal) + '</b>' : ''}${doc.ruta ? '<br>Asesor: <b>' + esc(doc.ruta) + '</b>' : ''}</div>
     ${doc.entrega ? `<div class="msg info">${doc.entrega.origen === 'RECEPCION' ? 'Queda pendiente hasta que Producción confirme lo que recibió.' : 'Recepción recibirá un aviso para confirmar esta salida.'}</div>` : ''}
+    ${doc.envioPT ? `<div class="msg info">Enviado a Producto terminado. Queda pendiente hasta que lo confirme.</div>` : ''}
     <div class="actions"><button class="btn btn-out" style="flex:1" onclick="elegirImpresion('${ref.id}')">🖨 Imprimir comprobante</button>
       <button class="btn btn-main" style="flex:1" onclick="closeModal()">Listo</button></div>`);
 }
@@ -687,7 +763,7 @@ function sincronizarDashboard(movId, doc, reversa) {
 /* ══════════════════════════ STOCK ══════════════════════════ */
 function renderStock() {
   const st = calcularStock(), a = S.modo.stock;
-  const seg = `<div class="seg" style="margin-bottom:12px">${[['INSUMOS', 'Insumos'], ['TERMINADO', 'P. terminado'], ['ENVASES', 'Envases vacíos']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.stock='${v}';renderMain()">${l}</button>`).join('')}</div>`;
+  const seg = `<div class="seg" style="margin-bottom:12px">${[['INSUMOS', 'Insumos'], ['LINEA', 'En producción'], ['TERMINADO', 'P. terminado'], ['ENVASES', 'Envases vacíos']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.stock='${v}';renderMain()">${l}</button>`).join('')}</div>`;
   let cuerpo;
   if (a === 'INSUMOS') {
     const items = insumosActivos();
@@ -712,6 +788,8 @@ function renderStock() {
       }).join('') + `<div class="card"><h2>Total general de insumos</h2><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Categoría</th><th class="n">Recibido</th><th class="n">A prod.</th><th class="n">Dañado</th><th class="n">Pérdida</th><th class="n">Ajuste</th><th class="n">Stock</th><th class="n">Mín.</th></tr></thead><tbody>
           ${totCat.map(x => `<tr><td><b>${esc(x.cat)}</b></td><td class="n">${num(x.t.rec)}</td><td class="n">${num(x.t.prod)}</td><td class="n">${num(x.t.dano)}</td><td class="n">${num(x.t.perd)}</td><td class="n">${fmtAj(x.t.aj)}</td><td class="n" style="font-weight:800">${num(x.t.stock)}</td><td class="n">${num(sumMin(items.filter(i => i.categoria === x.cat)))}</td></tr>`).join('')}
           </tbody><tfoot><tr class="tot"><td>TOTAL GENERAL</td><td class="n">${num(totGen.rec)}</td><td class="n">${num(totGen.prod)}</td><td class="n">${num(totGen.dano)}</td><td class="n">${num(totGen.perd)}</td><td class="n">${fmtAj(totGen.aj)}</td><td class="n">${num(totGen.stock)}</td><td class="n">${num(sumMin(items))}</td></tr></tfoot></table></div></div>` : '<div class="card empty">No hay catálogo de insumos todavía.</div>');
+  } else if (a === 'LINEA') { /* [PRODUCCIÓN→PT] */
+    cuerpo = htmlStockLinea(st);
   } else if (a === 'ENVASES') {
     const nombres = [...new Set([...Object.keys(st.env)])].sort();
     const total = nombres.reduce((x, n) => x + (st.env[n]?.stock || 0), 0);
@@ -725,7 +803,7 @@ function renderStock() {
     const nombres = [...new Set([...S.productos.map(p => p.nombre), ...Object.keys(st.pt)])].sort();
     const total = nombres.reduce((a, n) => a + (st.pt[n]?.stock || 0), 0);
     cuerpo = `<div class="kpis"><div class="kpi" style="border-color:var(--e3)"><span>Unidades en bodega de terminado</span><b>${num(total)}</b></div></div>
-      <div class="card"><h2>Producto terminado</h2><p class="hint">En bodega = terminado − cargado + devuelto − dañado ± ajuste. Lo que está en los camiones ya no cuenta aquí.</p>
+      <div class="card"><h2>Producto terminado</h2><p class="hint">En bodega = terminado (lo aceptado de Producción) − cargado + devuelto − dañado ± ajuste. Lo que está en los camiones ya no cuenta aquí.</p>
       <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Producto</th><th class="n">Terminado</th><th class="n">Cargado</th><th class="n">Devuelto</th><th class="n">Dañado</th><th class="n">Ajuste</th><th class="n">En bodega</th></tr></thead><tbody>
       ${nombres.map(n => { const s = st.pt[n] || { term: 0, carga: 0, dev: 0, dano: 0, aj: 0, stock: 0 };
         return `<tr class="${s.stock < 0 ? 'low' : ''}"><td><b>${esc(n)}</b></td><td class="n">${num(s.term)}</td><td class="n">${num(s.carga)}</td><td class="n">${num(s.dev)}</td><td class="n">${num(s.dano)}</td><td class="n">${s.aj ? (s.aj > 0 ? '+' : '') + num(s.aj) : '0'}</td><td class="n" style="font-weight:800;color:${s.stock < 0 ? 'var(--red)' : 'var(--text)'}">${num(s.stock)}</td></tr>`; }).join('')}
@@ -746,6 +824,8 @@ function htmlMov(m, sinAcciones) {
   const meta = [
     m.ruta ? `Asesor: <b>${esc(m.ruta)}</b>` : '',
     m.proveedor ? `Proveedor: <b>${esc(m.proveedor)}</b>${m.documento ? ' · Doc ' + esc(m.documento) : ''}` : '',
+    m.valorTotal !== undefined ? `Total factura: <b>${money(m.valorTotal)}</b>` : '', /* [PRECIO] */
+    m.envioPT?.confirmadoPorNombre ? `Recibió P. terminado: <b>${esc(m.envioPT.confirmadoPorNombre)}</b>${m.envioPT.nota ? ' (' + esc(m.envioPT.nota) + ')' : ''}` : '', /* [PRODUCCIÓN→PT] */
     m.motivo ? `Motivo: <b>${esc(m.motivo)}</b>` : '',
     m.entrega?.autorizadoPor ? `Autorizó: <b>${esc(m.entrega.autorizadoPor)}</b> (${esc(m.entrega.motivoSalida || '')})` : '',
     `Por: <b>${esc(m.creadoPorNombre || '-')}</b>`,
@@ -753,9 +833,12 @@ function htmlMov(m, sinAcciones) {
     m.entrega?.estado === 'CANCELADA' ? `<span style="color:var(--muted)">ENVÍO CANCELADO por ${esc(m.entrega.canceladoPorNombre || '-')}: ${esc(m.entrega.motivoCancelacion || '')} (no cuenta en el stock)</span>` : '',
     m.anulado ? `<span style="color:var(--red)">ANULADO por ${esc(m.anuladoPorNombre || '-')}: ${esc(m.motivoAnulacion || '')}</span>` : ''
   ].filter(Boolean).join(' · ');
-  const chips = (m.items || []).map(i => `<span class="chip">${i.categoria ? esc(i.categoria.slice(0, 3)) + ' · ' : ''}${esc(i.nombre)}: ${m.etapa === 'AJUSTE' ? (i.cantidad > 0 ? '+' : '') : ''}${num(i.cantidad)}</span>`).join('');
+  const ptC = m.etapa === 'PRODUCIDO' && m.envioPT && m.envioPT.estado !== 'PENDIENTE' ? m.envioPT : null; /* [PRODUCCIÓN→PT] */
+  const chips = m.etapa === 'PRODUCIDO' ? (m.items || []).map(i => `<span class="chip">${esc(i.nombre)}: ${num(i.cantidad)}${ptC && (Number(ptC.recibido?.[i.nombre]) || 0) !== Number(i.cantidad) ? ' → recibió ' + num(ptC.recibido?.[i.nombre] || 0) : ''}</span>`).join('') +
+    ((m.consumo || []).length ? `<div style="flex-basis:100%;font-size:11px;color:var(--muted);font-weight:700;margin-top:4px">Materia prima consumida:</div>` + m.consumo.map(x => `<span class="chip" style="opacity:.8">${esc((x.categoria || '').slice(0, 3))} · ${esc(x.nombre)}: ${num(x.cantidad)}</span>`).join('') : '')
+    : (m.items || []).map(i => `<span class="chip">${i.categoria ? esc(i.categoria.slice(0, 3)) + ' · ' : ''}${esc(i.nombre)}: ${m.etapa === 'AJUSTE' ? (i.cantidad > 0 ? '+' : '') : ''}${num(i.cantidad)}${i.precioUnitario ? ' × ' + precioTxt(i.precioUnitario) + ' = ' + money(i.total) : ''}</span>`).join('');
   return `<div class="mov ${m.anulado ? 'anulado' : ''}">
-    <div class="mov-top">${etapaBadge(m.etapa)}${area}${m.entrega && !m.anulado ? badgeEntrega(m) : ''}${m._pend ? '<span class="pend">⏳ pendiente de enviar</span>' : ''}
+    <div class="mov-top">${etapaBadge(m.etapa)}${area}${m.entrega && !m.anulado ? badgeEntrega(m) : ''}${m.envioPT && !m.anulado ? badgePT(m) : ''}${m._pend ? '<span class="pend">⏳ pendiente de enviar</span>' : ''}
       <span class="when">${fmtFecha(m.fecha)} ${fmtHora(msDe(m))}</span></div>
     <div class="mov-meta">${meta}</div>
     <div class="mov-items">${chips}</div>
@@ -763,6 +846,7 @@ function htmlMov(m, sinAcciones) {
       <button class="btn btn-out btn-sm" onclick="elegirImpresion('${m._id}')">🖨 Imprimir</button>
       ${m.entrega && puedeCancelarEnvio(m) ? `<button class="btn btn-out btn-sm" style="color:var(--red)" onclick="pedirCancelarEnvio('${m._id}')">✖ Cancelar envío</button>` : ''}
       ${m.entrega && !m.anulado && accionEntrega(m) ? `<button class="btn btn-main btn-sm" onclick="abrirConfirmarEntrega('${m._id}')">${esc(accionEntrega(m))}</button>` : ''}
+      ${puedeConfirmarPT(m) ? `<button class="btn btn-main btn-sm" onclick="abrirConfirmarPT('${m._id}')">✔ Confirmar lo recibido</button>` : ''}
       ${S.esAdmin && !m.anulado ? `<button class="btn btn-out btn-sm" style="color:var(--red)" onclick="pedirAnular('${m._id}')">Anular</button>` : ''}
     </div>`}</div>`;
 }
@@ -784,8 +868,11 @@ function renderHistorial() {
   ${lista.length > vis.length ? `<button class="btn btn-out btn-block" onclick="S.hist.limite+=40;renderMain()">Mostrar más (${lista.length - vis.length})</button>` : ''}`;
 }
 function exportarCSV() {
-  const filas = [['Fecha', 'Hora', 'Etapa', 'Área', 'Categoría', 'Ítem', 'Cantidad', 'Asesor', 'Proveedor', 'Documento', 'Motivo', 'Registrado por', 'Observación', 'Anulado']];
+  const filas = [['Fecha', 'Hora', 'Etapa', 'Área', 'Categoría', 'Ítem', 'Cantidad', 'Precio unitario', 'Total', 'Asesor', 'Proveedor', 'Documento', 'Motivo', 'Registrado por', 'Observación', 'Anulado']];
+  movsFiltrados().forEach(m => (m.consumo || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), 'Consumo de producción (receta)', 'LINEA', i.categoria || '', i.nombre, i.cantidad, '', '',
+    '', '', '', '', m.creadoPorNombre || '', m.nota || '', m.anulado ? 'SI' : '']))); /* [PRODUCCIÓN→PT] */
   movsFiltrados().forEach(m => (m.items || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), ETAPAS[m.etapa]?.titulo || m.etapa, m.area, i.categoria || '', i.nombre, i.cantidad,
+    i.precioUnitario !== undefined ? String(i.precioUnitario).replace('.', ',') : '', i.total !== undefined ? String(i.total).replace('.', ',') : '',
     m.ruta || '', m.proveedor || '', m.documento || '', m.motivo || '', m.creadoPorNombre || '', m.nota || '', m.anulado ? 'SI' : ''])));
   const csv = '﻿' + filas.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
   const a = document.createElement('a');
@@ -798,18 +885,19 @@ function pedirAnular(id) {
   const m = S.movs.find(x => x._id === id); if (!m) return;
   /* Si se anula una ENTRADA, avisa qué ítems quedarían en negativo */
   let avisoNeg = '';
-  const entrada = ['RECEPCION', 'TERMINADO', 'DEVOLUCION', 'RETORNO_ENVASE'].includes(m.etapa) || (m.etapa === 'AJUSTE');
+  const entrada = ['RECEPCION', 'TERMINADO', 'DEVOLUCION', 'RETORNO_ENVASE'].includes(m.etapa) || (m.etapa === 'AJUSTE')
+    || (m.etapa === 'PRODUCIDO' && m.envioPT && m.envioPT.estado !== 'PENDIENTE'); /* [PRODUCCIÓN→PT] */
   if (entrada) {
     const st = calcularStock();
     const neg = (m.items || []).filter(i => {
-      const q = Number(i.cantidad) || 0; if (q <= 0) return false;
-      const s = m.area === 'INSUMOS' ? (st.ins[i.id]?.stock || 0) : m.area === 'ENVASES' ? (st.env[i.nombre]?.stock || 0) : (st.pt[i.nombre]?.stock || 0);
+      const q = m.etapa === 'PRODUCIDO' ? Number(m.envioPT.recibido?.[i.nombre]) || 0 : Number(i.cantidad) || 0; if (q <= 0) return false;
+      const s = m.area === 'INSUMOS' ? (st.ins[i.id]?.stock || 0) : m.area === 'ENVASES' ? (st.env[i.nombre]?.stock || 0) : m.area === 'LINEA' ? (st.lin[i.id]?.stock || 0) : (st.pt[i.nombre]?.stock || 0);
       return s - q < 0;
     });
     if (neg.length) avisoNeg = `<div class="msg err">Al anular, quedarían en negativo: ${neg.map(i => esc(i.nombre)).join(', ')} (esa mercadería ya salió). Revisa antes de continuar.</div>`;
   }
   openModal(`<h3>Anular movimiento</h3>${htmlMov(m, true)}${avisoNeg}
-    <div class="msg warn">El registro no se borra: queda marcado como ANULADO y deja de contar en el stock.${['TERMINADO', 'DANO', 'AJUSTE'].includes(m.etapa) && m.area === 'TERMINADO' ? ' También se revierte en el Inventario del dashboard.' : ''}</div>
+    <div class="msg warn">El registro no se borra: queda marcado como ANULADO y deja de contar en el stock.${['TERMINADO', 'DANO', 'AJUSTE'].includes(m.etapa) && m.area === 'TERMINADO' ? ' También se revierte en el Inventario del dashboard.' : ''}${m.etapa === 'PRODUCIDO' ? ' La materia prima consumida vuelve a producción' + (m.envioPT?.estado !== 'PENDIENTE' ? ' y lo recibido sale de P. terminado y del Inventario del dashboard.' : '.') : ''}</div>
     <label class="lbl">Motivo de la anulación *</label><input class="in" id="motAnular" style="text-transform:uppercase" placeholder="Ej. cantidad digitada mal">
     <div class="actions"><button class="btn btn-out" style="flex:1" onclick="closeModal()">Cancelar</button>
       <button class="btn btn-red" style="flex:1" onclick="anular('${id}')">Anular</button></div>`);
@@ -820,6 +908,7 @@ function anular(id) {
   db.collection('bodMovimientos').doc(id).update({ anulado: true, anuladoPor: S.user.uid, anuladoPorNombre: S.nombre, anuladoEn: TS(), motivoAnulacion: mot })
     .catch(e => alert('❌ No se pudo anular: ' + e.message));
   sincronizarDashboard(id, m, true);
+  if (m.etapa === 'PRODUCIDO' && m.envioPT && m.envioPT.estado !== 'PENDIENTE') sincronizarPT(id, m.envioPT.recibido, m.envioPT.fechaConfirmacion || m.fecha, true); /* [PRODUCCIÓN→PT] */
   closeModal(); toast('Movimiento anulado');
 }
 
@@ -827,12 +916,16 @@ function anular(id) {
 function imprimirMov(id) {
   const m = S.movs.find(x => x._id === id); if (!m) { toast('Espera un momento y vuelve a intentar.'); return; }
   const e = ETAPAS[m.etapa] || {};
-  const filas = (m.items || []).map(i => `<tr><td>${esc(i.nombre)}${i.categoria ? ' <i>(' + esc(i.categoria) + ')</i>' : ''}</td><td class="r">${m.etapa === 'AJUSTE' && i.cantidad > 0 ? '+' : ''}${num(i.cantidad)}</td></tr>`).join('');
+  const conPrecio = m.valorTotal !== undefined; /* [PRECIO] */
+  const filas = (m.items || []).map(i => `<tr><td>${esc(i.nombre)}${i.categoria ? ' <i>(' + esc(i.categoria) + ')</i>' : ''}</td><td class="r">${m.etapa === 'AJUSTE' && i.cantidad > 0 ? '+' : ''}${num(i.cantidad)}</td></tr>` +
+    (conPrecio ? `<tr><td style="font-size:11px">&nbsp;× ${precioTxt(i.precioUnitario)}</td><td class="r">${money(i.total)}</td></tr>` : '')).join('');
   const quien = m.creadoPorNombre || '', ase = nombreRuta(m.ruta);
   const firmas = m.etapa === 'CARGA' ? [['ENTREGA BODEGA', quien], ['RECIBE ASESOR', ase]]
     : (m.etapa === 'DEVOLUCION' || m.etapa === 'RETORNO_ENVASE') ? [['ENTREGA ASESOR', ase], ['RECIBE BODEGA', quien]]
     : m.etapa === 'RECEPCION' ? [['ENTREGA PROVEEDOR', m.proveedor || ''], ['RECIBE BODEGA', quien]]
+    : m.etapa === 'PRODUCIDO' ? [['ENTREGA PRODUCCIÓN', quien], ['RECIBE P. TERMINADO', m.envioPT?.confirmadoPorNombre || '']] /* [PRODUCCIÓN→PT] */
     : [['RESPONSABLE', quien]];
+  const consumoTk = (m.consumo || []).length ? `<div><b>MATERIA PRIMA CONSUMIDA</b></div><table>${m.consumo.map(x => `<tr><td>${esc(x.nombre)} <i>(${esc(x.categoria || '')})</i></td><td class="r">${num(x.cantidad)}</td></tr>`).join('')}</table><hr>` : '';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Comprobante</title><style>
     @page{size:58mm auto;margin:2mm}*{margin:0;padding:0}body{width:48mm;font:12px/1.35 Arial,sans-serif;color:#000}
     h1{font-size:15px;text-align:center}h2{font-size:12px;text-align:center;margin:2px 0 4px}.c{text-align:center}
@@ -845,8 +938,8 @@ function imprimirMov(id) {
     ${m.ruta ? `<div>Asesor: <b>${esc(m.ruta)}</b></div>` : ''}${m.proveedor ? `<div>Proveedor: <b>${esc(m.proveedor)}</b></div>` : ''}${m.documento ? `<div>Doc: ${esc(m.documento)}</div>` : ''}
     ${m.motivo ? `<div>Motivo: ${esc(m.motivo)}</div>` : ''}${m.area && (m.etapa === 'DANO' || m.etapa === 'AJUSTE' || m.area === 'ENVASES') ? `<div>Área: ${nombreArea(m.area).toUpperCase()}</div>` : ''}
     <div>Registró: ${esc(m.creadoPorNombre || '')}</div>${m.anulado ? '<div><b>*** ANULADO ***</b></div>' : ''}
-    <hr><table>${filas}</table><hr>${m.totalUnidades ? `<table><tr><td><b>TOTAL</b></td><td class="r">${num(m.totalUnidades)}</td></tr></table>` : ''}
-    ${m.nota ? `<div>Obs.: ${esc(m.nota)}</div>` : ''}
+    <hr><table>${filas}</table><hr>${m.totalUnidades ? `<table><tr><td><b>TOTAL</b></td><td class="r">${num(m.totalUnidades)}</td></tr>${conPrecio ? `<tr><td><b>TOTAL $</b></td><td class="r">${money(m.valorTotal)}</td></tr>` : ''}</table>` : ''}
+    ${consumoTk}${m.nota ? `<div>Obs.: ${esc(m.nota)}</div>` : ''}
     ${firmas.map(([t, n]) => `<div class="f"><b>${esc(n || ' ')}</b>${t}</div>`).join('')}<br><div class="c">.</div>
     <script>window.onload=function(){setTimeout(function(){window.print()},300)}<\/script></body></html>`;
   const w = window.open('', '_blank');
@@ -868,13 +961,24 @@ function elegirImpresion(id) {
 function imprimirMovPDF(id) {
   const m = S.movs.find(x => x._id === id); if (!m) { toast('Espera un momento y vuelve a intentar.'); return; }
   const e = ETAPAS[m.etapa] || {};
-  const filas = (m.items || []).map((i, k) => `<tr><td class="c">${k + 1}</td><td>${esc(i.nombre)}</td><td>${esc(i.categoria || '')}</td><td class="r">${m.etapa === 'AJUSTE' && i.cantidad > 0 ? '+' : ''}${num(i.cantidad)}</td></tr>`).join('');
+  const conPrecio = m.valorTotal !== undefined; /* [PRECIO] */
+  const filas = (m.items || []).map((i, k) => `<tr><td class="c">${k + 1}</td><td>${esc(i.nombre)}</td><td>${esc(i.categoria || '')}</td><td class="r">${m.etapa === 'AJUSTE' && i.cantidad > 0 ? '+' : ''}${num(i.cantidad)}</td>${conPrecio ? `<td class="r">${precioTxt(i.precioUnitario)}</td><td class="r">${money(i.total)}</td>` : ''}</tr>`).join('');
   const quien = m.creadoPorNombre || '', ase = nombreRuta(m.ruta);
   const firmas = m.etapa === 'CARGA' ? [['ENTREGA BODEGA', quien], ['RECIBE ASESOR', ase]]
     : (m.etapa === 'DEVOLUCION' || m.etapa === 'RETORNO_ENVASE') ? [['ENTREGA ASESOR', ase], ['RECIBE BODEGA', quien]]
     : m.etapa === 'RECEPCION' ? [['ENTREGA PROVEEDOR', m.proveedor || ''], ['RECIBE BODEGA', quien]]
+    : m.etapa === 'PRODUCIDO' ? [['ENTREGA PRODUCCIÓN', quien], ['RECIBE P. TERMINADO', m.envioPT?.confirmadoPorNombre || '']] /* [PRODUCCIÓN→PT] */
     : [['RESPONSABLE', quien]];
   const dato = (l, v) => v ? `<div class="d"><span>${l}</span><b>${v}</b></div>` : '';
+  /* [PRODUCCIÓN→PT] Enviado vs recibido por P. terminado, y materia prima consumida */
+  const esPT = m.etapa === 'PRODUCIDO', pt = m.envioPT || {}, ptConf = esPT && pt.estado && pt.estado !== 'PENDIENTE';
+  const vPT = (mapa, i) => ptConf ? num(Number(mapa?.[i.nombre]) || 0) : '—';
+  const tablaPT = esPT ? `<table><thead><tr><th class="c">#</th><th>Producto</th><th class="r">Enviado</th><th class="r">Recibido</th><th class="r">Dañado</th><th class="r">Faltante</th></tr></thead><tbody>
+      ${(m.items || []).map((i, k) => `<tr><td class="c">${k + 1}</td><td>${esc(i.nombre)}</td><td class="r">${num(i.cantidad)}</td><td class="r">${vPT(pt.recibido, i)}</td><td class="r">${vPT(pt.danado, i)}</td><td class="r">${vPT(pt.faltante, i)}</td></tr>`).join('')}</tbody>
+      <tfoot><tr class="tot"><td></td><td>TOTAL</td><td class="r">${num(m.totalUnidades)}</td><td class="r">${ptConf ? num(pt.totalRecibido) : '—'}</td><td class="r">${ptConf ? num(pt.totalDanado) : '—'}</td><td class="r">${ptConf ? num(pt.totalFaltante) : '—'}</td></tr></tfoot></table>
+    ${(m.consumo || []).length ? `<h3 style="font-size:13px;color:#0b4f4a;margin:16px 0 6px">Materia prima consumida (según receta)</h3><table><thead><tr><th class="c">#</th><th>Insumo</th><th>Categoría</th><th class="r">Cantidad</th></tr></thead><tbody>
+      ${m.consumo.map((x, k) => `<tr><td class="c">${k + 1}</td><td>${esc(x.nombre)}</td><td>${esc(x.categoria || '')}</td><td class="r">${num(x.cantidad)}</td></tr>`).join('')}</tbody></table>` : ''}
+    ${pt.nota ? `<div class="obs"><b>Obs. P. terminado:</b> ${esc(pt.nota)}</div>` : ''}` : '';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Comprobante ${esc(m._id.slice(0, 8).toUpperCase())}</title><style>
     @page{size:A4;margin:15mm}*{margin:0;padding:0;box-sizing:border-box}body{font:13px/1.45 Arial,sans-serif;color:#000}
     .head{display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #0b4f4a;padding-bottom:10px;margin-bottom:14px}
@@ -891,9 +995,10 @@ function imprimirMovPDF(id) {
     ${m.anulado ? '<div class="anul">*** ANULADO ***</div>' : ''}
     <div class="datos">${dato('Fecha', fmtFecha(m.fecha) + ' ' + fmtHora(msDe(m)))}${dato('Registró', esc(m.creadoPorNombre || ''))}
       ${dato('Asesor', m.ruta ? esc(m.ruta) : '')}${dato('Proveedor', m.proveedor ? esc(m.proveedor) : '')}${dato('Documento', m.documento ? esc(m.documento) : '')}
-      ${dato('Motivo', m.motivo ? esc(m.motivo) : '')}${dato('Área', m.area && (m.etapa === 'DANO' || m.etapa === 'AJUSTE' || m.area === 'ENVASES') ? nombreArea(m.area).toUpperCase() : '')}</div>
-    <table><thead><tr><th class="c">#</th><th>Ítem</th><th>Categoría</th><th class="r">Cantidad</th></tr></thead><tbody>${filas}</tbody>
-    ${m.totalUnidades ? `<tfoot><tr class="tot"><td></td><td colspan="2">TOTAL</td><td class="r">${num(m.totalUnidades)}</td></tr></tfoot>` : ''}</table>
+      ${dato('Motivo', m.motivo ? esc(m.motivo) : '')}${dato('Área', m.area && (m.etapa === 'DANO' || m.etapa === 'AJUSTE' || m.area === 'ENVASES') ? nombreArea(m.area).toUpperCase() : '')}
+      ${esPT ? dato('Estado', esc((ESTADOS_PT[pt.estado] || { t: pt.estado || '' }).t)) : ''}</div>
+    ${esPT ? tablaPT : `<table><thead><tr><th class="c">#</th><th>Ítem</th><th>Categoría</th><th class="r">Cantidad</th>${conPrecio ? '<th class="r">P. unit.</th><th class="r">Total</th>' : ''}</tr></thead><tbody>${filas}</tbody>
+    ${m.totalUnidades ? `<tfoot><tr class="tot"><td></td><td colspan="2">TOTAL</td><td class="r">${num(m.totalUnidades)}</td>${conPrecio ? `<td></td><td class="r">${money(m.valorTotal)}</td>` : ''}</tr></tfoot>` : ''}</table>`}
     ${m.nota ? `<div class="obs"><b>Obs.:</b> ${esc(m.nota)}</div>` : ''}
     <div class="firmas">${firmas.map(([t, n]) => `<div class="f"><b>${esc(n || ' ')}</b>${t}</div>`).join('')}</div>
     <div class="pie">Aqua Luan · Bodega</div>
@@ -939,6 +1044,226 @@ function imprimirStockPDF() {
   const w = window.open('', '_blank');
   if (!w) { alert('El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para esta app.'); return; }
   w.document.open(); w.document.write(html); w.document.close();
+}
+
+/* ══════════════════════════ [PRODUCCIÓN→PT] PRODUCCIÓN → PRODUCTO TERMINADO ══════════════════════════
+   Producción registra cuántas unidades terminadas hizo (etapa PRODUCIDO). Con la receta de cada producto
+   (bodRecetas) se calcula la materia prima consumida (`consumo`) y se descuenta de la materia prima EN
+   PRODUCCIÓN (lo que Producción recibió de bodega). El envío nace `envioPT.estado = 'PENDIENTE'` y no
+   suma a la bodega de terminado hasta que P. terminado confirma producto por producto:
+     CONFIRMADA      → recibió todo
+     CON_DIFERENCIA  → hubo dañado y/o faltante (queda registrado; solo lo recibido entra al stock)
+   Al confirmar, lo recibido entra también al Inventario del dashboard (origen bodega_terminado). */
+const ESTADOS_PT = {
+  PENDIENTE:      { t: '⏳ Pendiente: P. terminado confirma', bg: 'var(--amberbg)', c: 'var(--amber)' },
+  CONFIRMADA:     { t: '✓ Recibido completo', bg: 'var(--okbg)', c: 'var(--ok)' },
+  CON_DIFERENCIA: { t: '⚠ Recibido con diferencia', bg: 'var(--redbg)', c: 'var(--red)' }
+};
+let _ptAbierto = null;
+function recetaDe(nombre) { return S.recetas[nombre] || []; }
+function consumoDe(qty) {
+  const c = {};
+  for (const [prod, q] of Object.entries(qty || {})) {
+    if (!(q > 0)) continue;
+    for (const r of recetaDe(prod)) c[r.id] = (c[r.id] || 0) + q * (Number(r.cantidad) || 0);
+  }
+  for (const k in c) c[k] = Math.round(c[k] * 10000) / 10000;
+  return c;
+}
+function htmlConsumo(cons, st, enVivo) {
+  const ids = Object.keys(cons);
+  const fila = id => { const i = S.insumos.find(x => x.id === id) || { nombre: id, categoria: '' }, disp = st.lin[id]?.stock || 0, queda = Math.round((disp - cons[id]) * 10000) / 10000;
+    return `<tr class="${queda < 0 ? 'low' : ''}"><td>${esc(i.nombre)}<br><small style="color:var(--muted)">${esc(i.categoria || '')}</small></td><td class="n">${num(disp)}</td><td class="n"><b>${num(cons[id])}</b></td><td class="n" style="font-weight:800;color:${queda < 0 ? 'var(--red)' : 'var(--ok)'}">${num(queda)}</td></tr>`; };
+  const orden = id => { const i = S.insumos.find(x => x.id === id) || {}; return CATEGORIAS.indexOf(i.categoria) * 1000 + (i.orden ?? 999); };
+  const tabla = ids.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Materia prima</th><th class="n">En producción</th><th class="n">Se consume</th><th class="n">Queda</th></tr></thead>
+    <tbody>${ids.sort((a, b) => orden(a) - orden(b)).map(fila).join('')}</tbody></table></div>` : '<div class="empty">Escribe las unidades producidas para ver la materia prima que se consume.</div>';
+  const falta = ids.some(id => cons[id] > (st.lin[id]?.stock || 0));
+  return `${enVivo ? '<h2>Materia prima que se consume</h2><p class="hint">Calculado con la receta de cada producto. “En producción” es lo que bodega te envió y aún no se ha usado.</p>' : '<h2 style="margin-top:10px;font-size:14px">Materia prima que se consume</h2>'}
+    ${tabla}${falta ? '<div class="msg err">No alcanza la materia prima en producción para lo que escribiste. Revisa las cantidades o pide a Recepción que te envíe más.</div>' : ''}`;
+}
+function htmlStockLinea(st) {
+  const items = insumosActivos().filter(i => { const s = st.lin[i.id]; return s && (s.rec || s.cons || s.aj); });
+  const total = items.reduce((a, i) => a + (st.lin[i.id]?.stock || 0), 0);
+  const head = '<thead><tr><th>Ítem</th><th class="n">Recibido de bodega</th><th class="n">Consumido</th><th class="n">Ajuste</th><th class="n">En producción</th></tr></thead>';
+  return `<div class="kpis"><div class="kpi" style="border-color:var(--e2)"><span>Materia prima en producción</span><b>${num(Math.round(total * 100) / 100)}</b><small>unidades sin usar en la línea</small></div></div>
+    <div class="card"><h2>Materia prima en producción</h2><p class="hint">En producción = lo que Producción recibió de bodega − lo consumido según las recetas ± ajuste. Se corrige con <b>± Ajuste → En producción</b>.</p>
+    ${items.length ? CATEGORIAS.map(cat => { const arr = items.filter(i => i.categoria === cat); if (!arr.length) return '';
+      return `<h2 style="font-size:14px;margin:10px 0 6px">${cat} POR UNIDADES</h2><div class="tbl-wrap"><table class="tbl">${head}<tbody>${arr.map(i => { const s = st.lin[i.id];
+        return `<tr class="${s.stock < 0 ? 'low' : ''}"><td><b>${esc(i.nombre)}</b></td><td class="n">${num(s.rec)}</td><td class="n">${num(s.cons)}</td><td class="n">${s.aj ? (s.aj > 0 ? '+' : '') + num(s.aj) : '0'}</td><td class="n" style="font-weight:800;color:${s.stock < 0 ? 'var(--red)' : 'var(--text)'}">${num(s.stock)}</td></tr>`; }).join('')}</tbody></table></div>`; }).join('')
+      : '<div class="empty">Todavía no hay materia prima en producción.</div>'}</div>`;
+}
+function badgePT(m) { const e = ESTADOS_PT[m.envioPT?.estado]; return e ? ` <span class="badge" style="background:${e.bg};color:${e.c}">${esc(e.t)}</span>` : ''; }
+function puedeConfirmarPT(m) { return !S.soloLectura && !m.anulado && m.etapa === 'PRODUCIDO' && m.envioPT?.estado === 'PENDIENTE' && puede('TERMINADO'); }
+function enviosPT() { return S.movs.filter(m => m.etapa === 'PRODUCIDO' && !m.anulado && m.envioPT); }
+function firmaPT() { return S.movs.filter(m => m.etapa === 'PRODUCIDO').map(m => m._id + (m.envioPT?.estado || '') + (m.anulado ? 'x' : '')).join(','); }
+function avisoPTInicio() {
+  if (!puede('TERMINADO') || S.soloLectura) return '';
+  const n = enviosPT().filter(puedeConfirmarPT).length; if (!n) return '';
+  return `<div class="msg warn" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+    <span>🔔 Tienes <b>${n}</b> envío(s) de Producción por confirmar en Producto terminado.</span>
+    <button class="btn btn-main btn-sm" onclick="irA('TERMINADO')">Ver</button></div>`;
+}
+/* En Producción (modo ➜ Enviar a P. terminado): lo que espera confirmación y los últimos envíos */
+function htmlEnviosPTProduccion() {
+  const todos = enviosPT().sort((a, b) => msDe(b) - msDe(a));
+  const pend = todos.filter(m => m.envioPT.estado === 'PENDIENTE'), ult = todos.filter(m => m.envioPT.estado !== 'PENDIENTE').slice(0, 5);
+  return `${pend.length ? `<div class="card"><h2>⏳ Esperando confirmación de P. terminado (${pend.length})</h2>${pend.map(m => htmlMov(m)).join('')}</div>` : ''}
+    ${ult.length ? `<div class="card"><h2>Últimos envíos confirmados por P. terminado</h2>${ult.map(m => htmlMov(m)).join('')}</div>` : ''}`;
+}
+/* Pantalla 3 · P. terminado */
+function renderTerminado() {
+  const e = ETAPAS.TERMINADO, todos = enviosPT();
+  const pend = todos.filter(m => m.envioPT.estado === 'PENDIENTE').sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '') || msDe(a) - msDe(b));
+  const hechos = todos.filter(m => m.envioPT.estado !== 'PENDIENTE').sort((a, b) => (b.envioPT.confirmadoLocal || 0) - (a.envioPT.confirmadoLocal || 0)).slice(0, 15);
+  return `<div class="card">
+    <div class="step-head"><div class="step-num" style="background:var(--${e.c}bg);color:var(--${e.c})">${esc(e.n)}</div>
+      <div><h2>${esc(e.titulo)}</h2><p>${esc(e.desc)}</p></div></div>
+    <div class="msg info">El producto terminado entra solo con lo que confirmas de los envíos de Producción. Lo aceptado también suma al Inventario del dashboard.</div></div>
+  ${pend.length ? `<div class="card" style="border:2px solid var(--amber)"><h2 style="color:var(--amber)">🔔 Envíos de Producción por confirmar (${pend.length})</h2>
+      <p class="hint">Cuenta producto por producto y confirma lo que recibiste en buen estado, lo dañado y lo que faltó.</p>${pend.map(m => htmlMov(m)).join('')}</div>`
+    : '<div class="card empty">No hay envíos de Producción pendientes.</div>'}
+  <div class="card"><h2>Últimos envíos confirmados</h2>${hechos.length ? hechos.map(m => htmlMov(m)).join('') : '<div class="empty">Todavía no hay envíos confirmados.</div>'}</div>`;
+}
+function abrirConfirmarPT(id) {
+  const m = S.movs.find(x => x._id === id); if (!m) return;
+  if (!puedeConfirmarPT(m)) { toast('Este envío ya fue confirmado o no te corresponde.'); return; }
+  _ptAbierto = id;
+  const filas = (m.items || []).map((i, k) => `<tr data-k="${k}"><td>${esc(i.nombre)}</td><td class="n"><b>${num(i.cantidad)}</b></td>
+    <td class="n"><input class="in" type="number" inputmode="numeric" min="0" step="1" style="width:70px;padding:6px;text-align:right" data-rec value="${Number(i.cantidad) || 0}" oninput="recalcPT()"></td>
+    <td class="n"><input class="in" type="number" inputmode="numeric" min="0" step="1" style="width:70px;padding:6px;text-align:right" data-dan placeholder="0" oninput="recalcPT()"></td>
+    <td class="n" data-dif>✓</td></tr>`).join('');
+  openModal(`<h3>✔ Confirmar lo recibido de Producción</h3>
+    <div class="mov-meta">Fecha: <b>${fmtFecha(m.fecha)}</b> ${fmtHora(msDe(m))} · N° ${esc(m._id.slice(0, 8).toUpperCase())}<br>Envió Producción: <b>${esc(m.creadoPorNombre || '-')}</b>${m.nota ? '<br>Obs.: ' + esc(m.nota) : ''}</div>
+    <div class="msg info">Cuenta cada producto. En <b>Recibido</b> pon lo que llegó en buen estado y en <b>Dañado</b> lo que llegó roto o mal sellado. Solo lo recibido entra a la bodega de terminado.</div>
+    <div class="tbl-wrap"><table class="tbl" id="tblPT"><thead><tr><th>Producto</th><th class="n">Enviado</th><th class="n">Recibido</th><th class="n">Dañado</th><th class="n">Cuadre</th></tr></thead><tbody>${filas}</tbody></table></div>
+    <div id="resPT"></div>
+    <label class="lbl">Observación <span id="obsReqPT" class="hint"></span></label><textarea class="in" id="notaPT" style="text-transform:uppercase" placeholder="Ej. 2 BOTELLONES MAL SELLADOS"></textarea>
+    <div class="actions"><button class="btn btn-out" style="flex:1" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-main" style="flex:2" id="btnPT" onclick="guardarConfirmPT('${id}')">Aceptar y confirmar</button></div>`);
+  recalcPT();
+}
+function leerTablaPT() {
+  return [...document.querySelectorAll('#tblPT tbody tr')].map(tr => ({ k: Number(tr.dataset.k), tr,
+    rec: Math.max(0, Math.floor(Number(tr.querySelector('[data-rec]').value) || 0)),
+    dan: Math.max(0, Math.floor(Number(tr.querySelector('[data-dan]').value) || 0)) }));
+}
+function recalcPT() {
+  const m = S.movs.find(x => x._id === _ptAbierto); if (!m || !$('#btnPT')) return;
+  let falt = 0, dan = 0, exceso = 0;
+  leerTablaPT().forEach(r => {
+    const env = Number(m.items[r.k].cantidad) || 0, dif = env - r.rec - r.dan, cel = r.tr.querySelector('[data-dif]');
+    dan += r.dan;
+    if (dif === 0) cel.innerHTML = '<span style="color:var(--ok);font-weight:800">✓</span>';
+    else if (dif > 0) { falt += dif; cel.innerHTML = `<span style="color:var(--red);font-weight:800">faltan ${num(dif)}</span>`; }
+    else { exceso += -dif; cel.innerHTML = `<span style="color:var(--red);font-weight:800">sobran ${num(-dif)}</span>`; }
+  });
+  $('#resPT').innerHTML = exceso ? '<div class="msg err">Recibido + dañado no puede ser mayor a lo enviado. Corrige las cantidades.</div>'
+    : (falt || dan) ? `<div class="msg err">${dan ? `Dañado: <b>${num(dan)}</b>. ` : ''}${falt ? `Faltan: <b>${num(falt)}</b>. ` : ''}Quedará registrado como <b>recibido con diferencia</b> y Producción lo verá.</div>`
+    : '<div class="msg ok">Todo cuadra con lo enviado.</div>';
+  $('#obsReqPT').textContent = (falt || dan) ? '(obligatoria)' : '';
+  $('#btnPT').disabled = exceso > 0;
+}
+function guardarConfirmPT(id) {
+  const m = S.movs.find(x => x._id === id); if (!m || !puedeConfirmarPT(m)) return closeModal();
+  const nota = upper($('#notaPT')?.value, 300), recibido = {}, danado = {}, faltante = {};
+  let totRec = 0, totDan = 0, totFalt = 0;
+  for (const r of leerTablaPT()) {
+    const it = m.items[r.k], env = Number(it.cantidad) || 0, dif = env - r.rec - r.dan;
+    if (dif < 0) return alert(`${it.nombre}: recibido + dañado (${r.rec + r.dan}) es mayor a lo enviado (${env}).`);
+    recibido[it.nombre] = r.rec; totRec += r.rec;
+    if (r.dan) { danado[it.nombre] = r.dan; totDan += r.dan; }
+    if (dif) { faltante[it.nombre] = dif; totFalt += dif; }
+  }
+  if ((totDan || totFalt) && !nota) return alert('Escribe una observación: explica qué llegó dañado o qué faltó.');
+  const resumen = `Recibido en buen estado (entra a la bodega): ${num(totRec)}` + (totDan ? `\nDañado: ${num(totDan)}` : '') + (totFalt ? `\nFaltante: ${num(totFalt)}` : '');
+  if (!confirm('¿Aceptas lo recibido de Producción?\n\n' + resumen)) return;
+  const fechaConf = hoy();
+  /* [PRODUCCIÓN→PT] Confirmación + entrada al Inventario del dashboard en UNA sola operación (lote atómico):
+     si Firestore rechaza la confirmación (p. ej. otro celular ya la confirmó), tampoco se graba la entrada al dashboard. */
+  const lote = db.batch();
+  lote.update(db.collection('bodMovimientos').doc(id), {
+    'envioPT.estado': (totDan || totFalt) ? 'CON_DIFERENCIA' : 'CONFIRMADA',
+    'envioPT.recibido': recibido, 'envioPT.danado': danado, 'envioPT.faltante': faltante,
+    'envioPT.totalRecibido': totRec, 'envioPT.totalDanado': totDan, 'envioPT.totalFaltante': totFalt,
+    'envioPT.nota': nota, 'envioPT.fechaConfirmacion': fechaConf,
+    'envioPT.confirmadoPor': S.user.uid, 'envioPT.confirmadoPorNombre': S.nombre, 'envioPT.confirmadoEn': TS(), 'envioPT.confirmadoLocal': Date.now()
+  });
+  agregarMovsPT(lote, id, recibido, fechaConf, false);
+  lote.commit().catch(e => alert('❌ No se guardó la confirmación ni la entrada al dashboard: ' + (e.code === 'permission-denied'
+    ? 'este envío ya fue confirmado desde otro celular, o faltan publicar las reglas de Firestore para Producción → P. terminado. Revisa el historial.' : e.message)));
+  closeModal();
+  openModal(`<h3>✓ Recibido de Producción</h3>
+    <div class="msg ${totDan || totFalt ? 'warn' : 'ok'}">Entraron <b>${num(totRec)}</b> unidad(es) a la bodega de terminado.${totDan ? ` Dañado: ${num(totDan)}.` : ''}${totFalt ? ` Faltante: ${num(totFalt)}.` : ''}</div>
+    <div class="actions"><button class="btn btn-out" style="flex:1" onclick="closeModal();imprimirMovPDF('${id}')">📄 Comprobante PDF</button>
+      <button class="btn btn-main" style="flex:1" onclick="closeModal()">Listo</button></div>`);
+}
+/* Lo aceptado por P. terminado entra al Inventario del dashboard (lote aparte: si falla, la confirmación no se pierde) */
+function agregarMovsPT(lote, movId, recibido, fecha, reversa) {
+  let n = 0;
+  for (const [prod, q0] of Object.entries(recibido || {})) {
+    const q = Number(q0) || 0; if (!q) continue; n++;
+    lote.set(db.collection('inventarioMovimientos').doc(), {
+      producto: prod, tipo: reversa ? 'salida' : 'entrada', cantidad: q,
+      motivo: reversa ? 'Bodega: anulación — ingreso de producto terminado (desde producción)' : 'Bodega: ingreso de producto terminado (confirmado desde producción)',
+      fecha, usuario: S.nombre, origen: reversa ? 'bodega_anulacion' : 'bodega_terminado', bodegaMovId: movId,
+      creadoPor: S.user.uid, creadoEn: TS()
+    });
+  }
+  return n;
+}
+/* Usado al ANULAR (solo admin): reversa en un lote aparte, igual que el resto de anulaciones */
+function sincronizarPT(movId, recibido, fecha, reversa) {
+  const lote = db.batch();
+  if (agregarMovsPT(lote, movId, recibido, fecha, reversa)) lote.commit().catch(err => console.warn('No se pudo sincronizar con el Inventario del dashboard:', err));
+}
+
+/* ── [PRODUCCIÓN→PT] Admin: recetas de producción ── */
+function recFilas(nombre) { return S.recEdit[nombre] || recetaDe(nombre).map(r => ({ id: r.id, cantidad: r.cantidad })); }
+function recEditar(nombre) { if (!S.recEdit[nombre]) S.recEdit[nombre] = recFilas(nombre).map(r => ({ ...r })); return S.recEdit[nombre]; }
+function prodDe(el) { return el.closest('[data-prod]').dataset.prod; }
+function setRecRow(el, j, campo, v) { const rows = recEditar(prodDe(el)); if (rows[j]) rows[j][campo] = v; }
+function agregarRecRow(el) { recEditar(prodDe(el)).push({ id: '', cantidad: '' }); renderMain(); }
+function quitarRecRow(el, j) { recEditar(prodDe(el)).splice(j, 1); renderMain(); }
+function descartarReceta(el) { delete S.recEdit[prodDe(el)]; renderMain(); }
+function htmlRecetas() {
+  const ins = insumosActivos();
+  if (!S.productos.length) return '<div class="card empty">No hay productos activos en el catálogo de la app de pedidos.</div>';
+  if (!ins.length) return '<div class="card empty">Primero carga el catálogo de insumos.</div>';
+  const opts = sel => CATEGORIAS.map(cat => { const arr = ins.filter(i => i.categoria === cat); return arr.length ? `<optgroup label="${cat}">${arr.map(i => `<option value="${esc(i.id)}" ${i.id === sel ? 'selected' : ''}>${esc(cat + ' · ' + i.nombre)}</option>`).join('')}</optgroup>` : ''; }).join('');
+  const con = S.productos.filter(p => recetaDe(p.nombre).length).length;
+  return `<div class="card"><h2>Recetas de producción</h2>
+    <p class="hint">Indica qué materia prima se gasta para hacer <b>1 unidad</b> de cada producto terminado (puede llevar decimales, ej. 0.5). Producción solo puede enviar a P. terminado productos con receta, y el sistema descuenta sola la materia prima.</p>
+    <div class="mov-meta"><b>${con}</b> de ${S.productos.length} producto(s) con receta.</div></div>` +
+  S.productos.map(p => {
+    const rows = recFilas(p.nombre), guardada = recetaDe(p.nombre), editando = !!S.recEdit[p.nombre];
+    return `<div class="card" data-prod="${esc(p.nombre)}"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px"><h2>${esc(p.nombre)}</h2>
+        ${editando ? '<span class="badge" style="background:var(--amberbg);color:var(--amber)">Sin guardar</span>' : guardada.length ? '<span class="badge" style="background:var(--okbg);color:var(--ok)">✓ Con receta</span>' : '<span class="badge" style="background:var(--redbg);color:var(--red)">Sin receta</span>'}</div>
+      ${rows.length ? '<div class="rec-row rec-head"><span>Materia prima</span><span>Cant. por unidad</span><span></span></div>' : ''}
+      ${rows.map((r, j) => `<div class="rec-row"><select class="in" onchange="setRecRow(this,${j},'id',this.value)"><option value="">— Elige el insumo —</option>${opts(r.id)}</select>
+        <input class="in" type="number" inputmode="decimal" min="0" step="any" value="${esc(r.cantidad ?? '')}" placeholder="0" oninput="setRecRow(this,${j},'cantidad',this.value)">
+        <button class="btn btn-out btn-sm" style="color:var(--red)" title="Quitar" onclick="quitarRecRow(this,${j})">✖</button></div>`).join('') || '<p class="hint">Todavía no tiene insumos.</p>'}
+      <div class="actions"><button class="btn btn-out btn-sm" onclick="agregarRecRow(this)">+ Insumo</button>
+        ${editando ? '<button class="btn btn-out btn-sm" onclick="descartarReceta(this)">Descartar cambios</button>' : ''}
+        <button class="btn btn-main btn-sm" onclick="guardarReceta(this)">Guardar receta</button></div></div>`;
+  }).join('');
+}
+function guardarReceta(el) {
+  const nombre = prodDe(el), rows = recFilas(nombre), vistos = new Set(), insumos = [];
+  for (const r of rows) {
+    const q = Number(String(r.cantidad).replace(',', '.'));
+    if (!r.id && !(q > 0)) continue; /* fila vacía: se ignora */
+    if (!r.id) return alert('Elige el insumo en todas las filas (o quita las filas vacías).');
+    if (!(q > 0)) return alert('Escribe una cantidad mayor a 0 en todas las filas.');
+    if (vistos.has(r.id)) return alert('Hay un insumo repetido en la receta. Déjalo una sola vez.');
+    vistos.add(r.id);
+    const i = S.insumos.find(x => x.id === r.id) || {};
+    insumos.push({ id: r.id, nombre: i.nombre || r.id, categoria: i.categoria || '', cantidad: Math.round(q * 10000) / 10000 });
+  }
+  if (!insumos.length && !confirm(`¿Guardar ${nombre} SIN receta? Producción no podrá enviarlo a P. terminado.`)) return;
+  db.collection('bodRecetas').doc(slug(nombre)).set({ producto: nombre, insumos, actualizadoPor: S.user.uid, actualizadoPorNombre: S.nombre, actualizadoEn: TS() })
+    .catch(e => alert('❌ No se pudo guardar la receta: ' + (e.code === 'permission-denied' ? 'faltan publicar las reglas de Firestore (bodRecetas).' : e.message)));
+  delete S.recEdit[nombre]; S.recetas[nombre] = insumos;
+  renderMain(); toast('Receta guardada: ' + nombre);
 }
 
 /* ══════════════════════════ [ENTREGA] RECEPCIÓN ↔ PRODUCCIÓN ══════════════════════════
@@ -1342,8 +1667,8 @@ function renderCuadre() {
 /* ══════════════════════════ ADMIN ══════════════════════════ */
 function renderAdmin() {
   const a = S.modo.admin;
-  const seg = `<div class="seg">${[['USUARIOS', 'Usuarios de bodega'], ['CATALOGO', 'Catálogo de insumos']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.admin='${v}';renderMain()">${l}</button>`).join('')}</div>`;
-  return `<div class="card"><h2>Administración</h2>${seg}</div>` + (a === 'USUARIOS' ? htmlUsuarios() : htmlCatalogo());
+  const seg = `<div class="seg">${[['USUARIOS', 'Usuarios de bodega'], ['CATALOGO', 'Catálogo de insumos'], ['RECETAS', 'Recetas de producción']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.admin='${v}';renderMain()">${l}</button>`).join('')}</div>`;
+  return `<div class="card"><h2>Administración</h2>${seg}</div>` + (a === 'USUARIOS' ? htmlUsuarios() : a === 'RECETAS' ? htmlRecetas() : htmlCatalogo());
 }
 
 /* Usuarios */

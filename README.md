@@ -7,12 +7,13 @@ PWA de bodega en `bodegaaqualuan.elhyai.com`. Proyecto Firebase `luan-aqua`, el 
 |#|Etapa|Quién|Efecto en el stock|
 |-|-|-|-|
 |1|Recepción en planta|Persona 1|+ insumos (bultos, tapas, etiquetas)|
-|2|Salida a producción|Persona 2|− insumos|
-|3|Bodega de producto terminado|Persona 3|+ producto terminado (y **entrada** en el Inventario del dashboard)|
+|2|Salida a producción|Persona 2|− insumos (+ materia prima **en producción**)|
+|2➜3|Producción → P. terminado|Persona 2|− materia prima en producción, calculada sola con la **receta** de cada producto. Queda **pendiente**|
+|3|Bodega de producto terminado|Persona 3|Confirma producto por producto lo que envió Producción (recibido / dañado / faltante). Solo lo recibido suma al terminado y **entra** al Inventario del dashboard. Ya no hay registro manual|
 |4|Carga al camión|Persona 4|− producto terminado (traslado al camión; el dashboard no cambia porque la venta ya descuenta)|
 |↩|Devolución del camión|Persona 4|+ producto terminado (solo producto LLENO no vendido)|
 |!|Rotos / dañados|Cualquiera de la bodega|− insumos o − terminado (los de terminado también salen del dashboard)|
-|±|Ajuste por conteo físico|Solo admin|corrige la diferencia|
+|±|Ajuste por conteo físico|Solo admin|corrige la diferencia (insumos, **en producción**, terminado o envases)|
 
 Los envases vacíos de CAMBIO no entran a ningún stock.
 
@@ -30,7 +31,10 @@ Se crean desde **⚙ Admin → Usuarios** (botones “Persona 1…4”). El usua
 ## Firestore
 
 * `bodInsumos` — catálogo de insumos (id `CATEGORIA\_\_NOMBRE`), con mínimo para alertas.
+* `bodRecetas` — receta por producto terminado: materia prima por 1 unidad. Se edita en **⚙ Admin → Recetas de producción**.
 * `bodMovimientos` — libro de movimientos; el stock se calcula sumándolos. Nada se borra: el admin **anula**.
+  * Recepción guarda `precioUnitario` y `total` por ítem y `valorTotal` (total de la factura).
+  * Producción → P. terminado: etapa `PRODUCIDO`, con `consumo` (materia prima según receta) y `envioPT` (`PENDIENTE` → `CONFIRMADA` / `CON\_DIFERENCIA`).
 * `productos` — el mismo catálogo de la app de pedidos.
 * `inventarioMovimientos` — el mismo stock del dashboard (origen `bodega\_terminado`, `bodega\_dano`, `bodega\_ajuste`, `bodega\_anulacion`).
 * Perfil en `usuarios`: `esBodega: true`, `activoBodega`, `rolesBodega: \[...]`.
