@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.2';
+const APP_VERSION = 'bodega-3.3.3';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -448,13 +448,30 @@ function refrescarFormulario() {
   const c = cfgDe(S.tab), st = calcularStock(), f = estadoForm(c.key);
   for (const it of itemsDeArea(c.area, st)) {
     const row = document.querySelector(`.item[data-id="${CSS.escape(it.id)}"]`); if (!row) continue;
-    const sm = row.querySelector('small'); if (sm) { sm.innerHTML = etiquetaStock(c, it); sm.classList.toggle('low', it.minimo > 0 && it.stock <= it.minimo || it.stock < 0); }
+    const sm = row.querySelector('small'); if (sm) { sm.innerHTML = etiquetaStock(c, it, st); sm.classList.toggle('low', it.minimo > 0 && it.stock <= it.minimo || it.stock < 0); }
     marcarInput(c, it, row.querySelector('input'), f.qty[it.id]);
   }
   pintarResumen();
 }
-function etiquetaStock(c, it) {
-  if (c.produce) { const r = recetaDe(it.nombre); return r.length ? `Insumos de productos: ${r.length} insumo(s) por unidad` : '<span style="color:var(--red)">Sin insumos de productos — pídelos al administrador</span>'; } /* [PRODUCCIÓN→PT] */
+/* [ALCANZA] Cuántas unidades completas se pueden producir con la materia prima EN PRODUCCIÓN y qué insumo limita */
+function alcanzaPara(nombre, st) {
+  const r = recetaDe(nombre); if (!r.length) return null;
+  let min = Infinity, lim = null;
+  for (const x of r) {
+    const disp = st.lin[x.id]?.stock || 0, q = Number(x.cantidad) || 0; if (!(q > 0)) continue;
+    const n = Math.max(0, Math.floor(disp / q + 1e-9));
+    if (n < min) { min = n; lim = { id: x.id, disp }; }
+  }
+  if (!lim) return null;
+  const ins = S.insumos.find(i => i.id === lim.id) || {};
+  return { n: min, limita: ins.nombre || lim.id, disp: lim.disp };
+}
+function etiquetaStock(c, it, st) {
+  if (c.produce) { /* [PRODUCCIÓN→PT] [ALCANZA] */
+    const a = alcanzaPara(it.nombre, st || calcularStock());
+    if (!a) return '<span style="color:var(--red)">Sin insumos de productos — pídelos al administrador</span>';
+    return `<span style="color:${a.n > 0 ? 'var(--ok)' : 'var(--red)'}">Alcanza para: <b>${num(a.n)}</b></span> · limita: ${esc(a.limita)} (${num(a.disp)} en producción)`;
+  }
   if (c.conteo) return `Sistema: <b>${num(it.stock)}</b>`;
   if (c.limitar) return `Disponible: <b>${num(it.stock)}</b>`;
   return `En bodega: ${num(it.stock)}${it.minimo ? ` · mín ${num(it.minimo)}` : ''}`;
@@ -523,7 +540,7 @@ function htmlFormulario(tab) {
           const low = (it.minimo > 0 && it.stock <= it.minimo) || it.stock < 0;
           const dis = c.produce && !recetaDe(it.nombre).length ? 'disabled' : ''; /* [PRODUCCIÓN→PT] sin receta no se puede producir */
           return `<div class="item" data-id="${esc(it.id)}" data-nm="${esc(it.nombre)}" ${visible ? '' : 'style="display:none"'}>
-            <div class="nm">${esc(it.nombre)}<small class="${low ? 'low' : ''}">${etiquetaStock(c, it)}</small></div>
+            <div class="nm">${esc(it.nombre)}<small class="${low ? 'low' : ''}">${etiquetaStock(c, it, st)}</small></div>
             <div class="qty">
               ${c.conteo ? '' : `<button type="button" ${dis} onclick="paso('${c.key}',this,-1)">−</button>`}
               <input type="number" inputmode="numeric" min="0" step="1" value="${v ?? ''}" placeholder="${c.conteo ? 'conteo' : '0'}" ${dis}
@@ -1096,10 +1113,19 @@ function htmlConsumo(cons, st, enVivo) {
     return `<tr class="${queda < 0 ? 'low' : ''}"><td>${esc(i.nombre)}<br><small style="color:var(--muted)">${esc(i.categoria || '')}</small></td><td class="n">${num(disp)}</td><td class="n"><b>${num(cons[id])}</b></td><td class="n" style="font-weight:800;color:${queda < 0 ? 'var(--red)' : 'var(--ok)'}">${num(queda)}</td></tr>`; };
   const orden = id => { const i = S.insumos.find(x => x.id === id) || {}; return CATEGORIAS.indexOf(i.categoria) * 1000 + (i.orden ?? 999); };
   const tabla = ids.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Materia prima</th><th class="n">En producción</th><th class="n">Se consume</th><th class="n">Queda</th></tr></thead>
-    <tbody>${ids.sort((a, b) => orden(a) - orden(b)).map(fila).join('')}</tbody></table></div>` : '<div class="empty">Escribe las unidades producidas para ver la materia prima que se consume.</div>';
+    <tbody>${ids.sort((a, b) => orden(a) - orden(b)).map(fila).join('')}</tbody></table></div>` : (enVivo ? htmlLineaResumen(st) : '<div class="empty">Escribe las unidades producidas para ver la materia prima que se consume.</div>'); /* [ALCANZA] */
   const falta = ids.some(id => cons[id] > (st.lin[id]?.stock || 0));
   return `${enVivo ? '<h2>Materia prima que se consume</h2><p class="hint">Calculado con los insumos de cada producto. “En producción” es lo que bodega te envió y aún no se ha usado.</p>' : '<h2 style="margin-top:10px;font-size:14px">Materia prima que se consume</h2>'}
     ${tabla}${falta ? '<div class="msg err">No alcanza la materia prima en producción para lo que escribiste. Revisa las cantidades o pide a Recepción que te envíe más.</div>' : ''}`;
+}
+/* [ALCANZA] Materia prima que Producción tiene ahora (se ve sin escribir unidades) */
+function htmlLineaResumen(st) {
+  const arr = insumosActivos().filter(i => (st.lin[i.id]?.stock || 0) !== 0);
+  if (!arr.length) return '<div class="empty">No tienes materia prima en producción. Confirma lo que te envió Recepción o pide que te envíen.</div>';
+  const orden = i => CATEGORIAS.indexOf(i.categoria) * 1000 + (i.orden ?? 999);
+  return `<div class="msg info">Materia prima que tienes <b>ahora</b> en producción. Escribe unidades arriba para ver cuánto se consume.</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Materia prima</th><th class="n">En producción</th></tr></thead><tbody>
+    ${arr.sort((a, b) => orden(a) - orden(b)).map(i => { const s = st.lin[i.id].stock; return `<tr class="${s < 0 ? 'low' : ''}"><td>${esc(i.nombre)}<br><small style="color:var(--muted)">${esc(i.categoria || '')}</small></td><td class="n"><b>${num(s)}</b></td></tr>`; }).join('')}</tbody></table></div>`;
 }
 function htmlStockLinea(st) {
   const items = insumosActivos().filter(i => { const s = st.lin[i.id]; return s && (s.rec || s.cons || s.aj); });
