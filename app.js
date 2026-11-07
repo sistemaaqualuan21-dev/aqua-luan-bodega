@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.1';
+const APP_VERSION = 'bodega-3.3.2';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -55,7 +55,7 @@ const ETAPAS = {
   RECEPCION:  { n: '1', titulo: 'Recepción en planta',        corto: 'Recepción',    area: 'INSUMOS',   c: 'e1', desc: 'Check-in de todo lo que llega del proveedor: bultos, tapas y etiquetas.' },
   PRODUCCION: { n: '2', titulo: 'Salida a producción',        corto: 'Producción',   area: 'INSUMOS',   c: 'e2', desc: 'Lo que sale de la bodega de insumos hacia la línea de producción.' },
   /* [PRODUCCIÓN→PT] Producción fabrica con la materia prima (se descuenta sola según la receta) y envía a P. terminado */
-  PRODUCIDO:  { n: '2➜3', titulo: 'Producción → P. terminado', corto: 'Producido', area: 'TERMINADO', c: 'e3', desc: 'Escribe cuántos productos terminados hiciste. La materia prima se descuenta sola según la receta.' },
+  PRODUCIDO:  { n: '2➜3', titulo: 'Producción → P. terminado', corto: 'Producido', area: 'TERMINADO', c: 'e3', desc: 'Escribe cuántos productos terminados hiciste. La materia prima se descuenta sola según los insumos de productos.' },
   TERMINADO:  { n: '3', titulo: 'Bodega de producto terminado', corto: 'P. terminado', area: 'TERMINADO', c: 'e3', desc: 'Confirma el producto terminado que envía Producción. Solo lo aceptado entra a la bodega.' },
   CARGA:      { n: '4', titulo: 'Carga al camión',            corto: 'Carga',        area: 'TERMINADO', c: 'e4', desc: 'Producto terminado que se carga al camión de cada asesor.' },
   DEVOLUCION: { n: '↩', titulo: 'Devolución del camión',      corto: 'Devolución',   area: 'TERMINADO', c: 'e5', desc: 'Producto LLENO que el asesor regresa sin vender.' },
@@ -454,7 +454,7 @@ function refrescarFormulario() {
   pintarResumen();
 }
 function etiquetaStock(c, it) {
-  if (c.produce) { const r = recetaDe(it.nombre); return r.length ? `Receta: ${r.length} insumo(s) por unidad` : '<span style="color:var(--red)">Sin receta — pídela al administrador</span>'; } /* [PRODUCCIÓN→PT] */
+  if (c.produce) { const r = recetaDe(it.nombre); return r.length ? `Insumos de productos: ${r.length} insumo(s) por unidad` : '<span style="color:var(--red)">Sin insumos de productos — pídelos al administrador</span>'; } /* [PRODUCCIÓN→PT] */
   if (c.conteo) return `Sistema: <b>${num(it.stock)}</b>`;
   if (c.limitar) return `Disponible: <b>${num(it.stock)}</b>`;
   return `En bodega: ${num(it.stock)}${it.minimo ? ` · mín ${num(it.minimo)}` : ''}`;
@@ -495,7 +495,7 @@ function campoHTML(c, f, campo) {
 function htmlFormulario(tab) {
   const c = cfgDe(tab), f = estadoForm(c.key), st = calcularStock();
   const e = c.envio ? { ...ETAPAS.PRODUCCION, n: '➜', titulo: 'Enviar a producción', desc: 'Recepción entrega insumos a la línea de producción. Producción confirmará producto por producto lo que recibe.' } : ETAPAS[c.etapa];
-  let avisoProd = c.produce ? `<div class="msg info">Escribe cuántas unidades de cada producto terminado hiciste. La materia prima se descuenta <b>sola</b> según la receta, de lo que tienes en producción. El envío queda <b>pendiente</b> hasta que Producto terminado lo confirme.</div>` : ''; /* [PRODUCCIÓN→PT] */
+  let avisoProd = c.produce ? `<div class="msg info">Escribe cuántas unidades de cada producto terminado hiciste. La materia prima se descuenta <b>sola</b> según los insumos de productos, de lo que tienes en producción. El envío queda <b>pendiente</b> hasta que Producto terminado lo confirme.</div>` : ''; /* [PRODUCCIÓN→PT] */
   const items = itemsDeArea(c.area, st);
   let aviso = '';
   if (c.etapa === 'CARGA') aviso = `<div class="msg info">Solo producto lleno que sale de la bodega de terminado. Los envases vacíos de CAMBIO <b>no</b> se registran.</div>`;
@@ -650,7 +650,7 @@ function revisar(tab) {
     errores.push(`${it.categoria ? it.categoria + ' · ' : ''}${it.nombre}: pides ${num(f.qty[it.id])} pero solo hay ${num(it.stock)}.`));
   /* [PRODUCCIÓN→PT] Receta obligatoria y no consumir más materia prima de la que hay en producción */
   if (c.produce) {
-    elegidos.filter(it => !recetaDe(it.nombre).length).forEach(it => errores.push(`${it.nombre}: no tiene receta. Pide al administrador que la cree en ⚙ Admin → Recetas.`));
+    elegidos.filter(it => !recetaDe(it.nombre).length).forEach(it => errores.push(`${it.nombre}: no tiene insumos de productos. Pide al administrador que los registre en ⚙ Admin → Insumos de productos.`));
     const cons = consumoDe(f.qty);
     Object.entries(cons).forEach(([id, q]) => { const disp = st.lin[id]?.stock || 0, ins = S.insumos.find(x => x.id === id) || { nombre: id };
       if (q > disp) errores.push(`${ins.categoria ? ins.categoria + ' · ' : ''}${ins.nombre}: se necesitan ${num(q)} pero en producción solo hay ${num(disp)}.`); });
@@ -886,7 +886,7 @@ function renderHistorial() {
 }
 function exportarCSV() {
   const filas = [['Fecha', 'Hora', 'Etapa', 'Área', 'Categoría', 'Ítem', 'Cantidad', 'Precio unitario', 'IVA %', 'Valor IVA', 'Total', 'Asesor', 'Proveedor', 'Documento', 'Motivo', 'Registrado por', 'Observación', 'Anulado']];
-  movsFiltrados().forEach(m => (m.consumo || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), 'Consumo de producción (receta)', 'LINEA', i.categoria || '', i.nombre, i.cantidad, '', '', '', '',
+  movsFiltrados().forEach(m => (m.consumo || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), 'Consumo de producción (insumos de productos)', 'LINEA', i.categoria || '', i.nombre, i.cantidad, '', '', '', '',
     '', '', '', '', m.creadoPorNombre || '', m.nota || '', m.anulado ? 'SI' : '']))); /* [PRODUCCIÓN→PT] */
   movsFiltrados().forEach(m => (m.items || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), ETAPAS[m.etapa]?.titulo || m.etapa, m.area, i.categoria || '', i.nombre, i.cantidad,
     i.precioUnitario !== undefined ? String(i.precioUnitario).replace('.', ',') : '',
@@ -996,7 +996,7 @@ function imprimirMovPDF(id) {
   const tablaPT = esPT ? `<table><thead><tr><th class="c">#</th><th>Producto</th><th class="r">Enviado</th><th class="r">Recibido</th><th class="r">Dañado</th><th class="r">Faltante</th></tr></thead><tbody>
       ${(m.items || []).map((i, k) => `<tr><td class="c">${k + 1}</td><td>${esc(i.nombre)}</td><td class="r">${num(i.cantidad)}</td><td class="r">${vPT(pt.recibido, i)}</td><td class="r">${vPT(pt.danado, i)}</td><td class="r">${vPT(pt.faltante, i)}</td></tr>`).join('')}</tbody>
       <tfoot><tr class="tot"><td></td><td>TOTAL</td><td class="r">${num(m.totalUnidades)}</td><td class="r">${ptConf ? num(pt.totalRecibido) : '—'}</td><td class="r">${ptConf ? num(pt.totalDanado) : '—'}</td><td class="r">${ptConf ? num(pt.totalFaltante) : '—'}</td></tr></tfoot></table>
-    ${(m.consumo || []).length ? `<h3 style="font-size:13px;color:#0b4f4a;margin:16px 0 6px">Materia prima consumida (según receta)</h3><table><thead><tr><th class="c">#</th><th>Insumo</th><th>Categoría</th><th class="r">Cantidad</th></tr></thead><tbody>
+    ${(m.consumo || []).length ? `<h3 style="font-size:13px;color:#0b4f4a;margin:16px 0 6px">Materia prima consumida (según insumos de productos)</h3><table><thead><tr><th class="c">#</th><th>Insumo</th><th>Categoría</th><th class="r">Cantidad</th></tr></thead><tbody>
       ${m.consumo.map((x, k) => `<tr><td class="c">${k + 1}</td><td>${esc(x.nombre)}</td><td>${esc(x.categoria || '')}</td><td class="r">${num(x.cantidad)}</td></tr>`).join('')}</tbody></table>` : ''}
     ${pt.nota ? `<div class="obs"><b>Obs. P. terminado:</b> ${esc(pt.nota)}</div>` : ''}` : '';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Comprobante ${esc(m._id.slice(0, 8).toUpperCase())}</title><style>
@@ -1098,7 +1098,7 @@ function htmlConsumo(cons, st, enVivo) {
   const tabla = ids.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Materia prima</th><th class="n">En producción</th><th class="n">Se consume</th><th class="n">Queda</th></tr></thead>
     <tbody>${ids.sort((a, b) => orden(a) - orden(b)).map(fila).join('')}</tbody></table></div>` : '<div class="empty">Escribe las unidades producidas para ver la materia prima que se consume.</div>';
   const falta = ids.some(id => cons[id] > (st.lin[id]?.stock || 0));
-  return `${enVivo ? '<h2>Materia prima que se consume</h2><p class="hint">Calculado con la receta de cada producto. “En producción” es lo que bodega te envió y aún no se ha usado.</p>' : '<h2 style="margin-top:10px;font-size:14px">Materia prima que se consume</h2>'}
+  return `${enVivo ? '<h2>Materia prima que se consume</h2><p class="hint">Calculado con los insumos de cada producto. “En producción” es lo que bodega te envió y aún no se ha usado.</p>' : '<h2 style="margin-top:10px;font-size:14px">Materia prima que se consume</h2>'}
     ${tabla}${falta ? '<div class="msg err">No alcanza la materia prima en producción para lo que escribiste. Revisa las cantidades o pide a Recepción que te envíe más.</div>' : ''}`;
 }
 function htmlStockLinea(st) {
@@ -1106,7 +1106,7 @@ function htmlStockLinea(st) {
   const total = items.reduce((a, i) => a + (st.lin[i.id]?.stock || 0), 0);
   const head = '<thead><tr><th>Ítem</th><th class="n">Recibido de bodega</th><th class="n">Consumido</th><th class="n">Ajuste</th><th class="n">En producción</th></tr></thead>';
   return `<div class="kpis"><div class="kpi" style="border-color:var(--e2)"><span>Materia prima en producción</span><b>${num(Math.round(total * 100) / 100)}</b><small>unidades sin usar en la línea</small></div></div>
-    <div class="card"><h2>Materia prima en producción</h2><p class="hint">En producción = lo que Producción recibió de bodega − lo consumido según las recetas ± ajuste. Se corrige con <b>± Ajuste → En producción</b>.</p>
+    <div class="card"><h2>Materia prima en producción</h2><p class="hint">En producción = lo que Producción recibió de bodega − lo consumido según los insumos de productos ± ajuste. Se corrige con <b>± Ajuste → En producción</b>.</p>
     ${items.length ? CATEGORIAS.map(cat => { const arr = items.filter(i => i.categoria === cat); if (!arr.length) return '';
       return `<h2 style="font-size:14px;margin:10px 0 6px">${cat} POR UNIDADES</h2><div class="tbl-wrap"><table class="tbl">${head}<tbody>${arr.map(i => { const s = st.lin[i.id];
         return `<tr class="${s.stock < 0 ? 'low' : ''}"><td><b>${esc(i.nombre)}</b></td><td class="n">${num(s.rec)}</td><td class="n">${num(s.cons)}</td><td class="n">${s.aj ? (s.aj > 0 ? '+' : '') + num(s.aj) : '0'}</td><td class="n" style="font-weight:800;color:${s.stock < 0 ? 'var(--red)' : 'var(--text)'}">${num(s.stock)}</td></tr>`; }).join('')}</tbody></table></div>`; }).join('')
@@ -1251,20 +1251,20 @@ function htmlRecetas() {
   if (!ins.length) return '<div class="card empty">Primero carga el catálogo de insumos.</div>';
   const opts = sel => CATEGORIAS.map(cat => { const arr = ins.filter(i => i.categoria === cat); return arr.length ? `<optgroup label="${cat}">${arr.map(i => `<option value="${esc(i.id)}" ${i.id === sel ? 'selected' : ''}>${esc(cat + ' · ' + i.nombre)}</option>`).join('')}</optgroup>` : ''; }).join('');
   const con = S.productos.filter(p => recetaDe(p.nombre).length).length;
-  return `<div class="card"><h2>Recetas de producción</h2>
-    <p class="hint">Indica qué materia prima se gasta para hacer <b>1 unidad</b> de cada producto terminado (puede llevar decimales, ej. 0.5). Producción solo puede enviar a P. terminado productos con receta, y el sistema descuenta sola la materia prima.</p>
-    <div class="mov-meta"><b>${con}</b> de ${S.productos.length} producto(s) con receta.</div></div>` +
+  return `<div class="card"><h2>Insumos de productos</h2>
+    <p class="hint">Indica qué materia prima se gasta para hacer <b>1 unidad</b> de cada producto terminado (puede llevar decimales, ej. 0.5). Producción solo puede enviar a P. terminado productos con insumos registrados, y el sistema descuenta sola la materia prima.</p>
+    <div class="mov-meta"><b>${con}</b> de ${S.productos.length} producto(s) con insumos registrados.</div></div>` +
   S.productos.map(p => {
     const rows = recFilas(p.nombre), guardada = recetaDe(p.nombre), editando = !!S.recEdit[p.nombre];
     return `<div class="card" data-prod="${esc(p.nombre)}"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px"><h2>${esc(p.nombre)}</h2>
-        ${editando ? '<span class="badge" style="background:var(--amberbg);color:var(--amber)">Sin guardar</span>' : guardada.length ? '<span class="badge" style="background:var(--okbg);color:var(--ok)">✓ Con receta</span>' : '<span class="badge" style="background:var(--redbg);color:var(--red)">Sin receta</span>'}</div>
+        ${editando ? '<span class="badge" style="background:var(--amberbg);color:var(--amber)">Sin guardar</span>' : guardada.length ? '<span class="badge" style="background:var(--okbg);color:var(--ok)">✓ Con insumos</span>' : '<span class="badge" style="background:var(--redbg);color:var(--red)">Sin insumos</span>'}</div>
       ${rows.length ? '<div class="rec-row rec-head"><span>Materia prima</span><span>Cant. por unidad</span><span></span></div>' : ''}
       ${rows.map((r, j) => `<div class="rec-row"><select class="in" onchange="setRecRow(this,${j},'id',this.value)"><option value="">— Elige el insumo —</option>${opts(r.id)}</select>
         <input class="in" type="number" inputmode="decimal" min="0" step="any" value="${esc(r.cantidad ?? '')}" placeholder="0" oninput="setRecRow(this,${j},'cantidad',this.value)">
         <button class="btn btn-out btn-sm" style="color:var(--red)" title="Quitar" onclick="quitarRecRow(this,${j})">✖</button></div>`).join('') || '<p class="hint">Todavía no tiene insumos.</p>'}
       <div class="actions"><button class="btn btn-out btn-sm" onclick="agregarRecRow(this)">+ Insumo</button>
         ${editando ? '<button class="btn btn-out btn-sm" onclick="descartarReceta(this)">Descartar cambios</button>' : ''}
-        <button class="btn btn-main btn-sm" onclick="guardarReceta(this)">Guardar receta</button></div></div>`;
+        <button class="btn btn-main btn-sm" onclick="guardarReceta(this)">Guardar insumos</button></div></div>`;
   }).join('');
 }
 function guardarReceta(el) {
@@ -1274,16 +1274,16 @@ function guardarReceta(el) {
     if (!r.id && !(q > 0)) continue; /* fila vacía: se ignora */
     if (!r.id) return alert('Elige el insumo en todas las filas (o quita las filas vacías).');
     if (!(q > 0)) return alert('Escribe una cantidad mayor a 0 en todas las filas.');
-    if (vistos.has(r.id)) return alert('Hay un insumo repetido en la receta. Déjalo una sola vez.');
+    if (vistos.has(r.id)) return alert('Hay un insumo repetido en este producto. Déjalo una sola vez.');
     vistos.add(r.id);
     const i = S.insumos.find(x => x.id === r.id) || {};
     insumos.push({ id: r.id, nombre: i.nombre || r.id, categoria: i.categoria || '', cantidad: Math.round(q * 10000) / 10000 });
   }
-  if (!insumos.length && !confirm(`¿Guardar ${nombre} SIN receta? Producción no podrá enviarlo a P. terminado.`)) return;
+  if (!insumos.length && !confirm(`¿Guardar ${nombre} SIN insumos? Producción no podrá enviarlo a P. terminado.`)) return;
   db.collection('bodRecetas').doc(slug(nombre)).set({ producto: nombre, insumos, actualizadoPor: S.user.uid, actualizadoPorNombre: S.nombre, actualizadoEn: TS() })
-    .catch(e => alert('❌ No se pudo guardar la receta: ' + (e.code === 'permission-denied' ? 'faltan publicar las reglas de Firestore (bodRecetas).' : e.message)));
+    .catch(e => alert('❌ No se pudieron guardar los insumos: ' + (e.code === 'permission-denied' ? 'faltan publicar las reglas de Firestore (bodRecetas).' : e.message)));
   delete S.recEdit[nombre]; S.recetas[nombre] = insumos;
-  renderMain(); toast('Receta guardada: ' + nombre);
+  renderMain(); toast('Insumos guardados: ' + nombre);
 }
 
 /* ══════════════════════════ [ENTREGA] RECEPCIÓN ↔ PRODUCCIÓN ══════════════════════════
@@ -1687,7 +1687,7 @@ function renderCuadre() {
 /* ══════════════════════════ ADMIN ══════════════════════════ */
 function renderAdmin() {
   const a = S.modo.admin;
-  const seg = `<div class="seg">${[['USUARIOS', 'Usuarios de bodega'], ['CATALOGO', 'Catálogo de insumos'], ['RECETAS', 'Recetas de producción']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.admin='${v}';renderMain()">${l}</button>`).join('')}</div>`;
+  const seg = `<div class="seg">${[['USUARIOS', 'Usuarios de bodega'], ['CATALOGO', 'Catálogo de insumos'], ['RECETAS', 'Insumos de productos']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.admin='${v}';renderMain()">${l}</button>`).join('')}</div>`;
   return `<div class="card"><h2>Administración</h2>${seg}</div>` + (a === 'USUARIOS' ? htmlUsuarios() : a === 'RECETAS' ? htmlRecetas() : htmlCatalogo());
 }
 
