@@ -33,7 +33,7 @@ Se crean desde **⚙ Admin → Usuarios** (botones “Persona 1…4”). El usua
 * `bodInsumos` — catálogo de insumos (id `CATEGORIA\_\_NOMBRE`), con mínimo para alertas.
 * `bodRecetas` — receta por producto terminado: materia prima por 1 unidad. Se edita en **⚙ Admin → Recetas de producción**.
 * `bodMovimientos` — libro de movimientos; el stock se calcula sumándolos. Nada se borra: el admin **anula**.
-  * Recepción guarda `precioUnitario` y `total` por ítem y `valorTotal` (total de la factura).
+  * Recepción guarda `precioUnitario`, `ivaPct`, `iva` y `total` (con IVA) por ítem y `valorTotal` (total de la factura con IVA).
   * Producción → P. terminado: etapa `PRODUCIDO`, con `consumo` (materia prima según receta) y `envioPT` (`PENDIENTE` → `CONFIRMADA` / `CON\_DIFERENCIA`).
 * `productos` — el mismo catálogo de la app de pedidos.
 * `inventarioMovimientos` — el mismo stock del dashboard (origen `bodega\_terminado`, `bodega\_dano`, `bodega\_ajuste`, `bodega\_anulacion`).

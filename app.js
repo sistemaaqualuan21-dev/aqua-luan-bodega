@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.0';
+const APP_VERSION = 'bodega-3.3.1';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -433,6 +433,7 @@ function cfgDe(tab) {
 function estadoForm(key) {
   if (!S.form[key]) S.form[key] = { qty: {}, campos: { fecha: hoy(), motivo: 'ROTO' }, q: '' };
   if (!S.form[key].precio) S.form[key].precio = {}; /* [PRECIO] */
+  if (!S.form[key].iva) S.form[key].iva = {}; /* [IVA] % de IVA por producto */
   return S.form[key];
 }
 function firmaFormulario(tab) {
@@ -554,9 +555,15 @@ function htmlPrecioItem(c, f, it) {
   const p = f.precio[it.id], q = f.qty[it.id] || 0;
   return `<div class="pr"><label>P. unit. $</label>
     <input type="number" inputmode="decimal" min="0" step="any" value="${p ?? ''}" placeholder="0.00" class="${p > 0 ? 'has' : ''}" oninput="setPrecio('${c.key}',this)">
-    <span class="pr-tot">Total: <b>${q && p ? money(q * p) : '$0,00'}</b></span></div>`;
+    <label>IVA %</label>
+    <input type="number" inputmode="decimal" min="0" max="100" step="any" value="${f.iva[it.id] ?? ''}" placeholder="0" class="iva ${f.iva[it.id] > 0 ? 'has' : ''}" oninput="setIva('${c.key}',this)">
+    <span class="pr-tot">Total: <b>${money(totalLinea(f, it.id))}</b></span></div>`;
 }
-function totalLinea(f, id) { return r2((f.qty[id] || 0) * (f.precio[id] || 0)); }
+/* [IVA] Subtotal (cantidad × precio), valor del IVA y total con IVA */
+function subtotalLinea(f, id) { return r2((f.qty[id] || 0) * (f.precio[id] || 0)); }
+function ivaLinea(f, id) { return r2(subtotalLinea(f, id) * (((f.iva || {})[id] || 0) / 100)); }
+function ivaTxt(i) { return i.iva > 0 ? ' + IVA ' + num(i.ivaPct) + '% (' + money(i.iva) + ')' : ''; } /* [IVA] texto para historial/comprobantes */
+function totalLinea(f, id) { return r2(subtotalLinea(f, id) + ivaLinea(f, id)); }
 function pintarTotalItem(key, row) {
   if (!row) return; const t = row.querySelector('.pr-tot b'); if (!t) return;
   t.textContent = money(totalLinea(estadoForm(key), row.dataset.id));
@@ -566,6 +573,14 @@ function setPrecio(key, inp) {
   const n = Number(String(inp.value).replace(',', '.'));
   if (inp.value === '' || !(n > 0)) delete f.precio[id]; else f.precio[id] = Math.round(n * 10000) / 10000;
   inp.classList.toggle('has', f.precio[id] > 0);
+  pintarTotalItem(key, row); pintarResumen();
+}
+/* [IVA] Porcentaje de IVA por producto (ej. 15) */
+function setIva(key, inp) {
+  const row = inp.closest('.item'), id = row.dataset.id, f = estadoForm(key);
+  const n = Number(String(inp.value).replace(',', '.'));
+  if (inp.value === '' || !(n > 0)) delete f.iva[id]; else f.iva[id] = Math.min(100, Math.round(n * 100) / 100);
+  inp.classList.toggle('has', f.iva[id] > 0);
   pintarTotalItem(key, row); pintarResumen();
 }
 function htmlResumenCargas() {
@@ -615,7 +630,7 @@ function paso(key, btn, d) {
 }
 function limpiarForm(key) {
   if (!confirm('¿Borrar todas las cantidades de este formulario?')) return;
-  const f = estadoForm(key); f.qty = {}; f.precio = {}; f.campos.nota = ''; renderMain();
+  const f = estadoForm(key); f.qty = {}; f.precio = {}; f.iva = {}; f.campos.nota = ''; renderMain();
 }
 
 /* ── Revisar → confirmar → guardar ─────────────────────────────────── */
@@ -654,10 +669,12 @@ function revisar(tab) {
   }
   const filas = c.conteo
     ? ajustes.map(({ it, delta }) => `<tr><td>${esc(it.nombre)}${it.categoria ? `<br><small style="color:var(--muted)">${esc(it.categoria)}</small>` : ''}</td><td class="n">${num(it.stock)}</td><td class="n">${num(f.qty[it.id])}</td><td class="n" style="font-weight:800;color:${delta < 0 ? 'var(--red)' : 'var(--ok)'}">${delta > 0 ? '+' : ''}${num(delta)}</td></tr>`).join('')
-    : elegidos.map(it => `<tr><td>${esc(it.nombre)}${it.categoria ? `<br><small style="color:var(--muted)">${esc(it.categoria)}</small>` : ''}</td><td class="n"><b>${num(f.qty[it.id])}</b></td>${c.precio ? `<td class="n">${f.precio[it.id] ? precioTxt(f.precio[it.id]) : '<span style="color:var(--amber)">—</span>'}</td><td class="n"><b>${money(totalLinea(f, it.id))}</b></td>` : ''}</tr>`).join('');
+    : elegidos.map(it => `<tr><td>${esc(it.nombre)}${it.categoria ? `<br><small style="color:var(--muted)">${esc(it.categoria)}</small>` : ''}</td><td class="n"><b>${num(f.qty[it.id])}</b></td>${c.precio ? `<td class="n">${f.precio[it.id] ? precioTxt(f.precio[it.id]) : '<span style="color:var(--amber)">—</span>'}</td><td class="n">${f.iva[it.id] ? num(f.iva[it.id]) + '%<br><small>' + money(ivaLinea(f, it.id)) + '</small>' : '0%'}</td><td class="n"><b>${money(totalLinea(f, it.id))}</b></td>` : ''}</tr>`).join('');
   const total = elegidos.reduce((a, it) => a + (f.qty[it.id] || 0), 0);
   /* [PRECIO] Total de la factura y aviso de productos sin precio */
   const totalValor = c.precio ? r2(elegidos.reduce((a, it) => a + totalLinea(f, it.id), 0)) : 0;
+  const totalSub = c.precio ? r2(elegidos.reduce((a, it) => a + subtotalLinea(f, it.id), 0)) : 0; /* [IVA] */
+  const totalIva = c.precio ? r2(elegidos.reduce((a, it) => a + ivaLinea(f, it.id), 0)) : 0; /* [IVA] */
   const sinPrecio = c.precio ? elegidos.filter(it => !f.precio[it.id]) : [];
   if (sinPrecio.length) avisoDev += `<div class="msg warn">Sin precio unitario: ${sinPrecio.map(it => esc(it.nombre)).join(', ')}. Se guardarán con total $0,00.</div>`;
   /* [ENTREGA] Avisos de confirmación entre Recepción y Producción */
@@ -676,9 +693,9 @@ function revisar(tab) {
       ${c.campos.includes('autoriza') ? `<br>Autorizó: <b>${esc(valorAutoriza(f))}</b> · Motivo: <b>${esc(valorMotivoSalida(f))}</b>` : ''}
       ${f.campos.nota ? `<br>Obs.: ${esc(upper(f.campos.nota, 300))}` : ''}</div>
     ${avisoDev}
-    <div class="tbl-wrap"><table class="tbl"><thead><tr>${c.conteo ? '<th>Ítem</th><th class="n">Sistema</th><th class="n">Conteo</th><th class="n">Ajuste</th>' : '<th>Ítem</th><th class="n">Cantidad</th>' + (c.precio ? '<th class="n">P. unit.</th><th class="n">Total</th>' : '')}</tr></thead>
-      <tbody>${filas}</tbody>${c.conteo ? '' : `<tfoot><tr><td><b>TOTAL</b></td><td class="n"><b>${num(total)}</b></td>${c.precio ? `<td></td><td class="n"><b style="font-size:15px">${money(totalValor)}</b></td>` : ''}</tr></tfoot>`}</table></div>
-    ${c.precio ? `<div class="msg info">Total de la factura: <b style="font-size:16px">${money(totalValor)}</b>. Compáralo con la factura del proveedor antes de confirmar.</div>` : ''}
+    <div class="tbl-wrap"><table class="tbl"><thead><tr>${c.conteo ? '<th>Ítem</th><th class="n">Sistema</th><th class="n">Conteo</th><th class="n">Ajuste</th>' : '<th>Ítem</th><th class="n">Cantidad</th>' + (c.precio ? '<th class="n">P. unit.</th><th class="n">IVA</th><th class="n">Total</th>' : '')}</tr></thead>
+      <tbody>${filas}</tbody>${c.conteo ? '' : `<tfoot><tr><td><b>TOTAL</b></td><td class="n"><b>${num(total)}</b></td>${c.precio ? `<td></td><td class="n"><b>${money(totalIva)}</b></td><td class="n"><b style="font-size:15px">${money(totalValor)}</b></td>` : ''}</tr></tfoot>`}</table></div>
+    ${c.precio ? `<div class="msg info">Subtotal: <b>${money(totalSub)}</b> · IVA: <b>${money(totalIva)}</b><br>Total de la factura: <b style="font-size:16px">${money(totalValor)}</b>. Compáralo con la factura del proveedor antes de confirmar.</div>` : ''}
     <div class="actions"><button class="btn btn-out" style="flex:1" onclick="closeModal()">Corregir</button>
       <button class="btn btn-main" style="flex:2" id="btnConfirmar" onclick="confirmarGuardar('${tab}')">${txtBoton}</button></div>`);
 }
@@ -693,7 +710,7 @@ function confirmarGuardar(tab) {
       .filter(x => x.cantidad !== 0);
   } else {
     items = elegidos.map(it => ({ id: it.id, nombre: it.nombre, ...(it.categoria ? { categoria: it.categoria } : {}), cantidad: f.qty[it.id],
-      ...(c.precio ? { precioUnitario: f.precio[it.id] || 0, total: totalLinea(f, it.id) } : {}) })); /* [PRECIO] */
+      ...(c.precio ? { precioUnitario: f.precio[it.id] || 0, ivaPct: f.iva[it.id] || 0, iva: ivaLinea(f, it.id), total: totalLinea(f, it.id) } : {}) })); /* [PRECIO] [IVA] total incluye IVA */
   }
   const doc = {
     etapa: c.etapa, area: c.area, fecha: f.campos.fecha, items,
@@ -836,7 +853,7 @@ function htmlMov(m, sinAcciones) {
   const ptC = m.etapa === 'PRODUCIDO' && m.envioPT && m.envioPT.estado !== 'PENDIENTE' ? m.envioPT : null; /* [PRODUCCIÓN→PT] */
   const chips = m.etapa === 'PRODUCIDO' ? (m.items || []).map(i => `<span class="chip">${esc(i.nombre)}: ${num(i.cantidad)}${ptC && (Number(ptC.recibido?.[i.nombre]) || 0) !== Number(i.cantidad) ? ' → recibió ' + num(ptC.recibido?.[i.nombre] || 0) : ''}</span>`).join('') +
     ((m.consumo || []).length ? `<div style="flex-basis:100%;font-size:11px;color:var(--muted);font-weight:700;margin-top:4px">Materia prima consumida:</div>` + m.consumo.map(x => `<span class="chip" style="opacity:.8">${esc((x.categoria || '').slice(0, 3))} · ${esc(x.nombre)}: ${num(x.cantidad)}</span>`).join('') : '')
-    : (m.items || []).map(i => `<span class="chip">${i.categoria ? esc(i.categoria.slice(0, 3)) + ' · ' : ''}${esc(i.nombre)}: ${m.etapa === 'AJUSTE' ? (i.cantidad > 0 ? '+' : '') : ''}${num(i.cantidad)}${i.precioUnitario ? ' × ' + precioTxt(i.precioUnitario) + ' = ' + money(i.total) : ''}</span>`).join('');
+    : (m.items || []).map(i => `<span class="chip">${i.categoria ? esc(i.categoria.slice(0, 3)) + ' · ' : ''}${esc(i.nombre)}: ${m.etapa === 'AJUSTE' ? (i.cantidad > 0 ? '+' : '') : ''}${num(i.cantidad)}${i.precioUnitario ? ' × ' + precioTxt(i.precioUnitario) + ivaTxt(i) + ' = ' + money(i.total) : ''}</span>`).join('');
   return `<div class="mov ${m.anulado ? 'anulado' : ''}">
     <div class="mov-top">${etapaBadge(m.etapa)}${area}${m.entrega && !m.anulado ? badgeEntrega(m) : ''}${m.envioPT && !m.anulado ? badgePT(m) : ''}${m._pend ? '<span class="pend">⏳ pendiente de enviar</span>' : ''}
       <span class="when">${fmtFecha(m.fecha)} ${fmtHora(msDe(m))}</span></div>
@@ -868,11 +885,13 @@ function renderHistorial() {
   ${lista.length > vis.length ? `<button class="btn btn-out btn-block" onclick="S.hist.limite+=40;renderMain()">Mostrar más (${lista.length - vis.length})</button>` : ''}`;
 }
 function exportarCSV() {
-  const filas = [['Fecha', 'Hora', 'Etapa', 'Área', 'Categoría', 'Ítem', 'Cantidad', 'Precio unitario', 'Total', 'Asesor', 'Proveedor', 'Documento', 'Motivo', 'Registrado por', 'Observación', 'Anulado']];
-  movsFiltrados().forEach(m => (m.consumo || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), 'Consumo de producción (receta)', 'LINEA', i.categoria || '', i.nombre, i.cantidad, '', '',
+  const filas = [['Fecha', 'Hora', 'Etapa', 'Área', 'Categoría', 'Ítem', 'Cantidad', 'Precio unitario', 'IVA %', 'Valor IVA', 'Total', 'Asesor', 'Proveedor', 'Documento', 'Motivo', 'Registrado por', 'Observación', 'Anulado']];
+  movsFiltrados().forEach(m => (m.consumo || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), 'Consumo de producción (receta)', 'LINEA', i.categoria || '', i.nombre, i.cantidad, '', '', '', '',
     '', '', '', '', m.creadoPorNombre || '', m.nota || '', m.anulado ? 'SI' : '']))); /* [PRODUCCIÓN→PT] */
   movsFiltrados().forEach(m => (m.items || []).forEach(i => filas.push([m.fecha, fmtHora(msDe(m)), ETAPAS[m.etapa]?.titulo || m.etapa, m.area, i.categoria || '', i.nombre, i.cantidad,
-    i.precioUnitario !== undefined ? String(i.precioUnitario).replace('.', ',') : '', i.total !== undefined ? String(i.total).replace('.', ',') : '',
+    i.precioUnitario !== undefined ? String(i.precioUnitario).replace('.', ',') : '',
+    i.ivaPct !== undefined ? String(i.ivaPct).replace('.', ',') : '', i.iva !== undefined ? String(i.iva).replace('.', ',') : '', /* [IVA] */
+    i.total !== undefined ? String(i.total).replace('.', ',') : '',
     m.ruta || '', m.proveedor || '', m.documento || '', m.motivo || '', m.creadoPorNombre || '', m.nota || '', m.anulado ? 'SI' : ''])));
   const csv = '﻿' + filas.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
   const a = document.createElement('a');
@@ -918,7 +937,7 @@ function imprimirMov(id) {
   const e = ETAPAS[m.etapa] || {};
   const conPrecio = m.valorTotal !== undefined; /* [PRECIO] */
   const filas = (m.items || []).map(i => `<tr><td>${esc(i.nombre)}${i.categoria ? ' <i>(' + esc(i.categoria) + ')</i>' : ''}</td><td class="r">${m.etapa === 'AJUSTE' && i.cantidad > 0 ? '+' : ''}${num(i.cantidad)}</td></tr>` +
-    (conPrecio ? `<tr><td style="font-size:11px">&nbsp;× ${precioTxt(i.precioUnitario)}</td><td class="r">${money(i.total)}</td></tr>` : '')).join('');
+    (conPrecio ? `<tr><td style="font-size:11px">&nbsp;× ${precioTxt(i.precioUnitario)}${ivaTxt(i)}</td><td class="r">${money(i.total)}</td></tr>` : '')).join('');
   const quien = m.creadoPorNombre || '', ase = nombreRuta(m.ruta);
   const firmas = m.etapa === 'CARGA' ? [['ENTREGA BODEGA', quien], ['RECIBE ASESOR', ase]]
     : (m.etapa === 'DEVOLUCION' || m.etapa === 'RETORNO_ENVASE') ? [['ENTREGA ASESOR', ase], ['RECIBE BODEGA', quien]]
@@ -962,7 +981,8 @@ function imprimirMovPDF(id) {
   const m = S.movs.find(x => x._id === id); if (!m) { toast('Espera un momento y vuelve a intentar.'); return; }
   const e = ETAPAS[m.etapa] || {};
   const conPrecio = m.valorTotal !== undefined; /* [PRECIO] */
-  const filas = (m.items || []).map((i, k) => `<tr><td class="c">${k + 1}</td><td>${esc(i.nombre)}</td><td>${esc(i.categoria || '')}</td><td class="r">${m.etapa === 'AJUSTE' && i.cantidad > 0 ? '+' : ''}${num(i.cantidad)}</td>${conPrecio ? `<td class="r">${precioTxt(i.precioUnitario)}</td><td class="r">${money(i.total)}</td>` : ''}</tr>`).join('');
+  const filas = (m.items || []).map((i, k) => `<tr><td class="c">${k + 1}</td><td>${esc(i.nombre)}</td><td>${esc(i.categoria || '')}</td><td class="r">${m.etapa === 'AJUSTE' && i.cantidad > 0 ? '+' : ''}${num(i.cantidad)}</td>${conPrecio ? `<td class="r">${precioTxt(i.precioUnitario)}</td><td class="r">${i.iva > 0 ? num(i.ivaPct) + '% · ' + money(i.iva) : '—'}</td><td class="r">${money(i.total)}</td>` : ''}</tr>`).join('');
+  const totalIvaPDF = r2((m.items || []).reduce((a, i) => a + (Number(i.iva) || 0), 0)); /* [IVA] */
   const quien = m.creadoPorNombre || '', ase = nombreRuta(m.ruta);
   const firmas = m.etapa === 'CARGA' ? [['ENTREGA BODEGA', quien], ['RECIBE ASESOR', ase]]
     : (m.etapa === 'DEVOLUCION' || m.etapa === 'RETORNO_ENVASE') ? [['ENTREGA ASESOR', ase], ['RECIBE BODEGA', quien]]
@@ -997,8 +1017,8 @@ function imprimirMovPDF(id) {
       ${dato('Asesor', m.ruta ? esc(m.ruta) : '')}${dato('Proveedor', m.proveedor ? esc(m.proveedor) : '')}${dato('Documento', m.documento ? esc(m.documento) : '')}
       ${dato('Motivo', m.motivo ? esc(m.motivo) : '')}${dato('Área', m.area && (m.etapa === 'DANO' || m.etapa === 'AJUSTE' || m.area === 'ENVASES') ? nombreArea(m.area).toUpperCase() : '')}
       ${esPT ? dato('Estado', esc((ESTADOS_PT[pt.estado] || { t: pt.estado || '' }).t)) : ''}</div>
-    ${esPT ? tablaPT : `<table><thead><tr><th class="c">#</th><th>Ítem</th><th>Categoría</th><th class="r">Cantidad</th>${conPrecio ? '<th class="r">P. unit.</th><th class="r">Total</th>' : ''}</tr></thead><tbody>${filas}</tbody>
-    ${m.totalUnidades ? `<tfoot><tr class="tot"><td></td><td colspan="2">TOTAL</td><td class="r">${num(m.totalUnidades)}</td>${conPrecio ? `<td></td><td class="r">${money(m.valorTotal)}</td>` : ''}</tr></tfoot>` : ''}</table>`}
+    ${esPT ? tablaPT : `<table><thead><tr><th class="c">#</th><th>Ítem</th><th>Categoría</th><th class="r">Cantidad</th>${conPrecio ? '<th class="r">P. unit.</th><th class="r">IVA</th><th class="r">Total</th>' : ''}</tr></thead><tbody>${filas}</tbody>
+    ${m.totalUnidades ? `<tfoot><tr class="tot"><td></td><td colspan="2">TOTAL</td><td class="r">${num(m.totalUnidades)}</td>${conPrecio ? `<td></td><td class="r">${money(totalIvaPDF)}</td><td class="r">${money(m.valorTotal)}</td>` : ''}</tr></tfoot>` : ''}</table>`}
     ${m.nota ? `<div class="obs"><b>Obs.:</b> ${esc(m.nota)}</div>` : ''}
     <div class="firmas">${firmas.map(([t, n]) => `<div class="f"><b>${esc(n || ' ')}</b>${t}</div>`).join('')}</div>
     <div class="pie">Aqua Luan · Bodega</div>
