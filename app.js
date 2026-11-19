@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.9';
+const APP_VERSION = 'bodega-3.3.10';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -481,6 +481,20 @@ function alcanzaPara(nombre, st) {
   const ins = S.insumos.find(i => i.id === lim.id) || {};
   return { n: min, limita: ins.nombre || lim.id, disp: lim.disp };
 }
+/* [RECEPCIÓN→PRODUCCIÓN] Lo que Recepción envió a producción: conf = recibido y confirmado por Producción HOY; pend = enviado y aún por confirmar */
+function enviosRecepcion() {
+  const hoyS = hoy(), conf = {}, pend = {};
+  for (const m of S.movs) {
+    if (m.anulado || m.etapa !== 'PRODUCCION' || m.area === 'ENVASES' || m.entrega?.origen !== 'RECEPCION') continue;
+    if (m.entrega.estado === 'CANCELADA') continue;
+    if (m.entrega.estado === 'PENDIENTE_PRODUCCION') {
+      for (const it of (m.items || [])) pend[it.id] = (pend[it.id] || 0) + (Number(it.cantidad) || 0);
+    } else if (m.entrega.recibido && m.fecha === hoyS) {
+      for (const it of (m.items || [])) conf[it.id] = (conf[it.id] || 0) + (Number(m.entrega.recibido[it.id]) || 0);
+    }
+  }
+  return { conf, pend };
+}
 function etiquetaStock(c, it, st) {
   if (c.produce) { /* [PRODUCCIÓN→PT] [ALCANZA] */
     const a = alcanzaPara(it.nombre, st || calcularStock());
@@ -488,6 +502,11 @@ function etiquetaStock(c, it, st) {
     return `<span style="color:${a.n > 0 ? 'var(--ok)' : 'var(--red)'}">Alcanza para: <b>${num(a.n)}</b></span> · limita: ${esc(a.limita)} (${num(a.disp)} en producción)`;
   }
   if (c.conteo) return `Sistema: <b>${num(it.stock)}</b>`;
+  if (c.limitar && c.etapa === 'PRODUCCION' && c.area === 'INSUMOS' && !c.envio) { /* [RECEPCIÓN→PRODUCCIÓN] lo que Recepción manda a la planta */
+    st = st || calcularStock();
+    const r = st._recep || (st._recep = enviosRecepcion());
+    return `Disponible: <b>${num(it.stock)}</b> en bodega<br>Recepción envió hoy: <b>${num(r.conf[it.id] || 0)}</b> · Por confirmar: <b>${num(r.pend[it.id] || 0)}</b> · En producción: <b>${num(st.lin[it.id]?.stock || 0)}</b>`;
+  }
   if (c.limitar) return `Disponible: <b>${num(it.stock)}</b>`;
   return `En bodega: ${num(it.stock)}${it.minimo ? ` · mín ${num(it.minimo)}` : ''}`;
 }
