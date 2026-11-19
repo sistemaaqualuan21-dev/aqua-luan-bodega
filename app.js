@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.10';
+const APP_VERSION = 'bodega-3.3.12';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -365,6 +365,11 @@ function renderInicio() {
   const st = calcularStock(), f = hoy();
   const deHoy = S.movs.filter(m => !m.anulado && m.fecha === f);
   const tot = et => deHoy.filter(m => m.etapa === et).reduce((a, m) => a + (Number(m.totalUnidades) || 0), 0);
+  /* [TERMINADO-HOY] desglose por producto de lo producido hoy (mismos nombres del catálogo de productos) */
+  const prodHoy = {};
+  for (const m of deHoy) if (m.etapa === 'TERMINADO' || m.etapa === 'PRODUCIDO') for (const it of (m.items || [])) prodHoy[it.nombre] = (prodHoy[it.nombre] || 0) + (Number(it.cantidad) || 0);
+  const detProd = Object.entries(prodHoy).filter(([, q]) => q > 0).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
+    .map(([n, q]) => `${esc(n)}: <b>${num(q)}</b>`).join(' · ');
   const bajos = itemsDeArea('INSUMOS', st).filter(i => i.minimo > 0 && i.stock <= i.minimo);
   const negativos = [...itemsDeArea('INSUMOS', st), ...itemsDeArea('TERMINADO', st)].filter(i => i.stock < 0);
   const quick = ['RECEPCION', 'PRODUCCION', 'TERMINADO', 'CARGA'].filter(puede).map(et => {
@@ -390,7 +395,7 @@ function renderInicio() {
   <div class="kpis">
     <div class="kpi" style="border-color:var(--e1)"><span>Recibido hoy</span><b>${num(tot('RECEPCION'))}</b><small>unidades de insumos</small></div>
     <div class="kpi" style="border-color:var(--e2)"><span>A producción hoy</span><b>${num(tot('PRODUCCION'))}</b><small>unidades de insumos</small></div>
-    <div class="kpi" style="border-color:var(--e3)"><span>Terminado hoy</span><b>${num(tot('TERMINADO') + tot('PRODUCIDO'))}</b><small>unidades producidas</small></div>
+    <div class="kpi" style="border-color:var(--e3)"><span>Terminado hoy</span><b>${num(tot('TERMINADO') + tot('PRODUCIDO'))}</b><small>producidos hoy</small>${detProd ? `<small style="display:block;margin-top:4px;line-height:1.4">${detProd}</small>` : ''}</div>
     <div class="kpi" style="border-color:var(--e4)"><span>Cargado hoy</span><b>${num(tot('CARGA') - tot('DEVOLUCION'))}</b><small>neto (carga − devolución)</small></div>
     <div class="kpi" style="border-color:var(--ev)"><span>Envases recuperados hoy</span><b>${num(tot('RETORNO_ENVASE'))}</b><small>préstamos devueltos</small></div>
     <div class="kpi" style="border-color:var(--ed)"><span>Daños hoy</span><b>${num(tot('DANO'))}</b><small>unidades</small></div>
