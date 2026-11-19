@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.3';
+const APP_VERSION = 'bodega-3.3.4';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -87,10 +87,14 @@ function valorAutoriza(f) { return f.campos.autoriza === 'OTRO' ? upper(f.campos
 function valorMotivoSalida(f) { return f.campos.motivoSalida === 'OTRO' ? upper(f.campos.motivoSalidaOtro, 120) : (f.campos.motivoSalida || ''); }
 const MOTIVOS_DANO = ['ROTO', 'DAÑADO', 'DERRAMADO', 'MAL SELLADO', 'CONTAMINADO', 'OTRO'];
 
+/* [PROVEEDORES] Proveedores fijos de Recepción. Los que se creen con "CREAR OTRO" (o en Admin → Proveedores)
+   se guardan en Firestore: bodProveedores/{id} y se suman a esta lista. */
+const PROVEEDORES_BASE = ['ALL PLASTIC', 'AGRICOMINSA', 'HERMETICPLAST', 'MAYRA BOTELLONES Y MAS', 'FLEXOVITEC', 'FLEXOFAMA', 'SERVICESMART'];
+
 /* ── Estado ──────────────────────────────────────────────────────────── */
 const S = {
   user: null, perfil: null, nombre: '', roles: [], esAdmin: false, soloLectura: false,
-  insumos: [], productos: [], movs: [], asesores: [], usuariosBod: [],
+  insumos: [], productos: [], movs: [], asesores: [], usuariosBod: [], proveedoresDB: [],
   recetas: {}, recEdit: {}, /* [PRODUCCIÓN→PT] recetas por producto y borrador de edición (Admin) */
   tab: 'inicio', form: {}, modo: { RECEPCION: 'PROVEEDOR', CARGA: 'CARGA', PRODUCCION: 'INSUMOS', DANO: 'INSUMOS', AJUSTE: 'INSUMOS', stock: 'INSUMOS', admin: 'USUARIOS' },
   cuadre: { fecha: '', cache: {}, cargando: false, error: '' },
@@ -217,6 +221,11 @@ function iniciarListeners() {
     S.movs = snap.docs.map(d => ({ _id: d.id, _pend: d.metadata.hasPendingWrites, ...d.data() }));
     programarRefresco();
   }, onErr('movimientos')));
+  /* [PROVEEDORES] Si Firestore aún no tiene la regla, solo avisa en consola: Recepción sigue con la lista fija */
+  S.unsubs.push(db.collection('bodProveedores').onSnapshot(snap => {
+    S.proveedoresDB = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(p => p.nombre);
+    programarRefresco();
+  }, e => console.warn('listener proveedores', e.code)));
   if (puede('CARGA') || S.esAdmin) {
     S.unsubs.push(db.collection('usuarios').where('esAdmin', '==', false).onSnapshot(snap => {
       S.asesores = snap.docs.map(d => d.data()).filter(u => u.ruta && u.esBodega !== true && u.esSecretaria !== true)
@@ -440,6 +449,7 @@ function firmaFormulario(tab) {
   const c = cfgDe(tab);
   const ids = (c.area === 'INSUMOS' || c.area === 'LINEA') ? insumosActivos().map(i => i.id + i.nombre) : S.productos.map(p => p.nombre + c.area);
   return c.key + '|' + ids.join(',') + '|' + S.asesores.join(',') + '|' + S.errorReglas + '|' + firmaEntregas(tab) +
+    (c.campos.includes('proveedor') ? '|' + listaProveedores().join(',') : '') + /* [PROVEEDORES] */
     (c.produce ? '|' + JSON.stringify(S.recetas) + '|' + firmaPT() : ''); /* [PRODUCCIÓN→PT] */
 }
 function refrescarFormulario() {
@@ -487,10 +497,19 @@ function campoHTML(c, f, campo) {
   const on = `oninput="setCampo('${c.key}','${campo}',this.value)"`;
   switch (campo) {
     case 'fecha': return `<div><label class="lbl">Fecha</label><input class="in" type="date" value="${esc(v)}" max="${hoy()}" ${on}></div>`;
-    case 'proveedor': {
-      const provs = [...new Set(S.movs.filter(m => m.etapa === 'RECEPCION' && m.proveedor).map(m => m.proveedor))].slice(0, 40);
-      return `<div><label class="lbl">Proveedor *</label><input class="in" list="dlProv" style="text-transform:uppercase" value="${esc(v)}" placeholder="¿Quién entrega?" ${on}>
-        <datalist id="dlProv">${provs.map(p => `<option value="${esc(p)}">`).join('')}</datalist></div>`;
+    case 'proveedor': { /* [PROVEEDORES] lista desplegable + CREAR OTRO */
+      const lista = listaProveedores(), vU = upper(v), crear = !!f.provNuevo;
+      const opts = vU && !lista.includes(vU) ? [...lista, vU] : lista; /* el valor ya elegido nunca se pierde */
+      return `<div><label class="lbl">Proveedor *</label>
+        <select class="in" onchange="elegirProveedor('${c.key}',this.value)">
+          <option value="">— Seleccionar —</option>
+          ${opts.map(p => `<option value="${esc(p)}" ${!crear && p === vU ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+          <option value="__NUEVO__" ${crear ? 'selected' : ''}>➕ CREAR OTRO…</option>
+        </select>
+        ${crear ? `<input class="in" id="provNuevoIn" style="text-transform:uppercase;margin-top:8px" placeholder="Nombre del nuevo proveedor" value="${esc(f.provTexto || '')}"
+            oninput="estadoForm('${c.key}').provTexto=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault();guardarProveedorNuevo('${c.key}')}">
+          <div class="actions" style="margin-top:8px"><button type="button" class="btn btn-main btn-sm" onclick="guardarProveedorNuevo('${c.key}')">Guardar proveedor</button>
+            <button type="button" class="btn btn-out btn-sm" onclick="cancelarProveedorNuevo('${c.key}')">Cancelar</button></div>` : ''}</div>`;
     }
     case 'documento': return `<div><label class="lbl">Guía / factura N°</label><input class="in" style="text-transform:uppercase" value="${esc(v)}" placeholder="Opcional" ${on}></div>`;
     case 'nota': return `<div style="grid-column:1/-1"><label class="lbl">Observación</label><textarea class="in" style="text-transform:uppercase" placeholder="Lote, turno, placa del camión, novedad…" ${on}>${esc(v)}</textarea></div>`;
@@ -624,6 +643,47 @@ function pintarResumen() {
 
 /* Handlers del formulario (globales, usados desde el HTML) */
 function setCampo(key, campo, v) { estadoForm(key).campos[campo] = v; }
+
+/* [PROVEEDORES] Lista = fijos + creados (Firestore) + usados antes en Recepción; sin los desactivados en Admin */
+function listaProveedores() {
+  const inactivos = new Set(S.proveedoresDB.filter(p => p.activo === false).map(p => upper(p.nombre)));
+  const todos = [...PROVEEDORES_BASE,
+    ...S.proveedoresDB.filter(p => p.activo !== false).map(p => upper(p.nombre)),
+    ...S.movs.filter(m => m.etapa === 'RECEPCION' && m.proveedor).map(m => upper(m.proveedor))];
+  return [...new Set(todos)].filter(n => n && (PROVEEDORES_BASE.includes(n) || !inactivos.has(n)))
+    .sort((a, b) => a.localeCompare(b, 'es'));
+}
+/* Guarda el proveedor en Firestore sin esperar al servidor (funciona también sin internet). */
+function guardarProveedorDB(nombre) {
+  const id = slug(nombre);
+  db.collection('bodProveedores').doc(id).set({ nombre, activo: true, creadoPor: S.user.uid, creadoPorNombre: S.nombre, creadoEn: TS() }, { merge: true })
+    .catch(e => {
+      console.error('bodProveedores', e);
+      toast(e.code === 'permission-denied' ? 'El proveedor se usará en este registro, pero falta la regla de bodProveedores en Firebase.' : 'No se pudo guardar el proveedor en la lista.', 5000);
+    });
+}
+function elegirProveedor(key, val) {
+  const f = estadoForm(key), estabaCreando = !!f.provNuevo;
+  if (val === '__NUEVO__') {
+    f.provNuevo = true; f.provTexto = ''; f.campos.proveedor = '';
+    renderMain(); setTimeout(() => { const i = document.getElementById('provNuevoIn'); if (i) i.focus(); }, 50);
+    return;
+  }
+  f.provNuevo = false; f.campos.proveedor = val;
+  if (estabaCreando) renderMain();
+}
+function cancelarProveedorNuevo(key) {
+  const f = estadoForm(key); f.provNuevo = false; f.provTexto = ''; f.campos.proveedor = ''; renderMain();
+}
+function guardarProveedorNuevo(key) {
+  const f = estadoForm(key), nombre = upper(f.provTexto, 80);
+  if (!nombre || !slug(nombre)) return toast('Escribe el nombre del proveedor.');
+  const yaEsta = listaProveedores().includes(nombre);
+  if (!yaEsta) guardarProveedorDB(nombre);
+  f.provNuevo = false; f.provTexto = ''; f.campos.proveedor = nombre;
+  toast(yaEsta ? 'Ese proveedor ya existía: quedó seleccionado.' : 'Proveedor creado y seleccionado.');
+  renderMain();
+}
 function setModo(modo, v) { S.modo[modo] = v; renderMain(); }
 function filtrar(key, q) {
   const f = estadoForm(key); f.q = q.trim().toUpperCase();
@@ -659,7 +719,7 @@ function revisar(tab) {
   if (!elegidos.length) errores.push('No hay cantidades.');
   if (!f.campos.fecha) errores.push('Falta la fecha.');
   if (f.campos.fecha > hoy()) errores.push('La fecha no puede ser futura.');
-  if (c.campos.includes('proveedor') && !upper(f.campos.proveedor)) errores.push('Escribe el proveedor.');
+  if (c.campos.includes('proveedor') && !upper(f.campos.proveedor)) errores.push('Selecciona el proveedor.');
   if (c.campos.includes('asesor') && !f.campos.asesor) errores.push('Selecciona el asesor.');
   if (c.campos.includes('autoriza') && !valorAutoriza(f)) errores.push('Falta quién autoriza la salida. Recepción no está; indica quién te autorizó.');
   if (c.campos.includes('motivoSalida') && !valorMotivoSalida(f)) errores.push('Falta el motivo de la salida.');
@@ -1713,8 +1773,37 @@ function renderCuadre() {
 /* ══════════════════════════ ADMIN ══════════════════════════ */
 function renderAdmin() {
   const a = S.modo.admin;
-  const seg = `<div class="seg">${[['USUARIOS', 'Usuarios de bodega'], ['CATALOGO', 'Catálogo de insumos'], ['RECETAS', 'Insumos de productos']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.admin='${v}';renderMain()">${l}</button>`).join('')}</div>`;
-  return `<div class="card"><h2>Administración</h2>${seg}</div>` + (a === 'USUARIOS' ? htmlUsuarios() : a === 'RECETAS' ? htmlRecetas() : htmlCatalogo());
+  const seg = `<div class="seg">${[['USUARIOS', 'Usuarios de bodega'], ['CATALOGO', 'Catálogo de insumos'], ['RECETAS', 'Insumos de productos'], ['PROVEEDORES', 'Proveedores']].map(([v, l]) => `<button class="${a === v ? 'on' : ''}" onclick="S.modo.admin='${v}';renderMain()">${l}</button>`).join('')}</div>`;
+  return `<div class="card"><h2>Administración</h2>${seg}</div>` + (a === 'USUARIOS' ? htmlUsuarios() : a === 'RECETAS' ? htmlRecetas() : a === 'PROVEEDORES' ? htmlProveedores() : htmlCatalogo());
+}
+
+/* [PROVEEDORES] Admin: ver, agregar y activar/desactivar proveedores de Recepción */
+function htmlProveedores() {
+  const extra = S.proveedoresDB.filter(p => !PROVEEDORES_BASE.includes(upper(p.nombre))).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
+  return `
+  <div class="card"><h2>Agregar proveedor</h2>
+    <p class="hint">Lo que agregues aquí aparece en <b>Recepción → Proveedor</b>. Lo que se cree con “Crear otro” en Recepción aparece aquí.</p>
+    <div class="grid2"><div><label class="lbl">Nombre del proveedor</label><input class="in" id="npNombre" style="text-transform:uppercase" placeholder="EJ. NUEVO PROVEEDOR"></div></div>
+    <div class="actions"><button class="btn btn-main" onclick="agregarProveedorAdmin()">Agregar proveedor</button></div>
+  </div>
+  <div class="card"><h2>Proveedores (${PROVEEDORES_BASE.length + extra.length})</h2>
+    ${PROVEEDORES_BASE.map(n => `<div class="user-row"><b>${esc(n)}</b> <span class="hint" style="margin:0">· fijo</span></div>`).join('')}
+    ${extra.map(p => `<div class="user-row" style="display:flex;justify-content:space-between;align-items:center;gap:8px;${p.activo === false ? 'opacity:.6' : ''}">
+      <div><b>${esc(p.nombre)}</b>${p.activo === false ? ' <span class="hint" style="margin:0">· desactivado</span>' : ''}</div>
+      <button class="btn btn-out btn-sm" onclick="alternarProveedor('${esc(p.id)}',${p.activo === false})">${p.activo === false ? 'Activar' : 'Desactivar'}</button>
+    </div>`).join('')}
+  </div>`;
+}
+function agregarProveedorAdmin() {
+  const el = document.getElementById('npNombre'), nombre = upper(el.value, 80);
+  if (!nombre || !slug(nombre)) return alert('Escribe el nombre del proveedor.');
+  if (listaProveedores().includes(nombre)) return alert('Ese proveedor ya existe.');
+  guardarProveedorDB(nombre); el.value = ''; toast('Proveedor agregado');
+}
+function alternarProveedor(id, activar) {
+  db.collection('bodProveedores').doc(id).update({ activo: !!activar })
+    .then(() => toast(activar ? 'Proveedor activado' : 'Proveedor desactivado'))
+    .catch(e => alert('❌ ' + e.message));
 }
 
 /* Usuarios */
