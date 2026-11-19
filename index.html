@@ -65,6 +65,12 @@ label.lbl{display:block;font-size:11px;font-weight:800;letter-spacing:.05em;text
 input.in,select.in,textarea.in{width:100%;padding:11px 12px;border:1.5px solid var(--line);border-radius:11px;font-size:15px;font-weight:600;color:var(--text);background:var(--soft)}
 input.in:focus,select.in:focus,textarea.in:focus{outline:none;border-color:var(--teal);background:#fff}
 textarea.in{min-height:70px;resize:vertical}
+.provlista{position:absolute;left:0;right:0;top:100%;margin-top:4px;z-index:60;max-height:250px;overflow-y:auto;background:#fff;border:1.5px solid var(--line);border-radius:11px;box-shadow:0 8px 24px rgba(18,50,74,.18)}
+.provop{padding:11px 12px;font-size:14.5px;font-weight:700;color:var(--text);cursor:pointer;border-bottom:1px solid var(--line)}
+.provop:last-child{border-bottom:0}
+.provop:hover{background:var(--soft)}
+.provnew{color:var(--teal)}
+.provnada{color:var(--muted);cursor:default;font-weight:600}
 .grid2{display:grid;gap:0 12px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
 .btn{border:0;border-radius:12px;padding:12px 16px;font-weight:800;font-size:14px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
@@ -196,6 +202,6 @@ textarea.in{min-height:70px;resize:vertical}
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-app-compat.js" integrity="sha384-tgDxKHbfk8o2rrXLSytbpDGsGk0bdZehHXoeD7LhuGriE89B5ovitrlBu7FX4kj/" crossorigin="anonymous"></script>
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-auth-compat.js" integrity="sha384-UaGuhpArNP+gULAiiQrJNwk1AWTIZsfFEygQkDQYIGsTjoBmbSXgWfQeFJJXuFub" crossorigin="anonymous"></script>
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore-compat.js" integrity="sha384-O2tgK2bVAUCyEX//gu7nH2z8A92RsaKhRAQABpJ7kLaF/4KQYEltHstFCV7nxWpr" crossorigin="anonymous"></script>
-<script src="./app.js?v=3.3.5"></script>
+<script src="./app.js?v=3.3.6"></script>
 </body>
 </html>

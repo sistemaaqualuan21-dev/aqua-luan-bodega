@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.5';
+const APP_VERSION = 'bodega-3.3.6';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -500,19 +500,16 @@ function campoHTML(c, f, campo) {
     case 'fecha': return S.esAdmin
       ? `<div><label class="lbl">Fecha</label><input class="in" type="date" value="${esc(v)}" max="${hoy()}" ${on}></div>`
       : `<div><label class="lbl">Fecha</label><input class="in" type="date" value="${hoy()}" disabled title="La fecha solo la cambia el administrador"></div>`; /* [FECHA] */
-    case 'proveedor': { /* [PROVEEDORES] lista desplegable + CREAR OTRO */
-      const lista = listaProveedores(), vU = upper(v), crear = !!f.provNuevo;
-      const opts = vU && !lista.includes(vU) ? [...lista, vU] : lista; /* el valor ya elegido nunca se pierde */
-      return `<div><label class="lbl">Proveedor *</label>
-        <select class="in" onchange="elegirProveedor('${c.key}',this.value)">
-          <option value="">— Seleccionar —</option>
-          ${opts.map(p => `<option value="${esc(p)}" ${!crear && p === vU ? 'selected' : ''}>${esc(p)}</option>`).join('')}
-          <option value="__NUEVO__" ${crear ? 'selected' : ''}>➕ CREAR OTRO…</option>
-        </select>
-        ${crear ? `<input class="in" id="provNuevoIn" style="text-transform:uppercase;margin-top:8px" placeholder="Nombre del nuevo proveedor" value="${esc(f.provTexto || '')}"
+    case 'proveedor': { /* [PROVEEDORES] buscador + CREAR OTRO */
+      const vU = upper(v), crear = !!f.provNuevo;
+      return `<div style="position:relative"><label class="lbl">Proveedor *</label>
+        ${crear ? `<input class="in" id="provNuevoIn" style="text-transform:uppercase" placeholder="Nombre del nuevo proveedor" value="${esc(f.provTexto || '')}"
             oninput="estadoForm('${c.key}').provTexto=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault();guardarProveedorNuevo('${c.key}')}">
           <div class="actions" style="margin-top:8px"><button type="button" class="btn btn-main btn-sm" onclick="guardarProveedorNuevo('${c.key}')">Guardar proveedor</button>
-            <button type="button" class="btn btn-out btn-sm" onclick="cancelarProveedorNuevo('${c.key}')">Cancelar</button></div>` : ''}</div>`;
+            <button type="button" class="btn btn-out btn-sm" onclick="cancelarProveedorNuevo('${c.key}')">Cancelar</button></div>`
+        : `<input class="in" id="provIn" autocomplete="off" style="text-transform:uppercase" placeholder="🔍 Buscar proveedor…" value="${esc(vU || f.provQ || '')}"
+            onfocus="provAbrir('${c.key}',this)" oninput="provFiltrar('${c.key}',this.value)" onkeydown="provTecla(event,'${c.key}',this)" onblur="provCerrar('${c.key}')">
+          <div class="provlista" id="provLista" style="display:none"></div>`}</div>`;
     }
     case 'documento': return `<div><label class="lbl">Guía / factura N°</label><input class="in" style="text-transform:uppercase" value="${esc(v)}" placeholder="Opcional" ${on}></div>`;
     case 'nota': return `<div style="grid-column:1/-1"><label class="lbl">Observación</label><textarea class="in" style="text-transform:uppercase" placeholder="Lote, turno, placa del camión, novedad…" ${on}>${esc(v)}</textarea></div>`;
@@ -665,15 +662,51 @@ function guardarProveedorDB(nombre) {
       toast(e.code === 'permission-denied' ? 'El proveedor se usará en este registro, pero falta la regla de bodProveedores en Firebase.' : 'No se pudo guardar el proveedor en la lista.', 5000);
     });
 }
-function elegirProveedor(key, val) {
-  const f = estadoForm(key), estabaCreando = !!f.provNuevo;
-  if (val === '__NUEVO__') {
-    f.provNuevo = true; f.provTexto = ''; f.campos.proveedor = '';
-    renderMain(); setTimeout(() => { const i = document.getElementById('provNuevoIn'); if (i) i.focus(); }, 50);
-    return;
-  }
-  f.provNuevo = false; f.campos.proveedor = val;
-  if (estabaCreando) renderMain();
+/* [PROVEEDORES] Buscador de proveedor en Recepción (se filtra al escribir; sin acentos ni mayúsculas) */
+function provNorm(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim(); }
+function provCoincidencias(q) { const nq = provNorm(q); return listaProveedores().filter(n => !nq || provNorm(n).includes(nq)); }
+function provPintarLista(key, q) {
+  const box = document.getElementById('provLista'); if (!box) return;
+  const res = provCoincidencias(q);
+  box.innerHTML = res.map(n => `<div class="provop" data-n="${esc(n)}" onmousedown="event.preventDefault();provElegir('${key}',this.dataset.n)">${esc(n)}</div>`).join('')
+    + (res.length ? '' : '<div class="provop provnada">Sin resultados</div>')
+    + `<div class="provop provnew" onmousedown="event.preventDefault();provCrearOtro('${key}')">➕ CREAR OTRO…</div>`;
+  box.style.display = 'block';
+}
+function provAbrir(key, inp) { inp.select(); provPintarLista(key, ''); }
+function provFiltrar(key, q) {
+  const f = estadoForm(key); f.campos.proveedor = ''; f.provQ = q; /* mientras escribe no hay proveedor elegido */
+  provPintarLista(key, q);
+}
+function provElegir(key, nombre) {
+  const f = estadoForm(key); f.campos.proveedor = nombre; f.provQ = ''; f.provNuevo = false;
+  const i = document.getElementById('provIn'); if (i) { i.value = nombre; i.blur(); }
+  const b = document.getElementById('provLista'); if (b) b.style.display = 'none';
+}
+function provCerrar(key) {
+  setTimeout(() => {
+    const i = document.getElementById('provIn'), b = document.getElementById('provLista'); if (!i) return;
+    const f = estadoForm(key);
+    if (!f.campos.proveedor) { /* si lo escrito coincide exacto con un proveedor, lo toma; si no, deja el campo vacío */
+      const n = provNorm(i.value), ex = n && listaProveedores().find(p => provNorm(p) === n);
+      if (ex) f.campos.proveedor = ex;
+    }
+    i.value = f.campos.proveedor || ''; if (f.campos.proveedor) f.provQ = '';
+    if (b) b.style.display = 'none';
+  }, 150);
+}
+function provTecla(e, key, inp) {
+  if (e.key === 'Escape') { inp.blur(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  if (!provNorm(inp.value)) return;
+  const res = provCoincidencias(inp.value);
+  if (res.length) provElegir(key, res[0]); else provCrearOtro(key);
+}
+function provCrearOtro(key) {
+  const f = estadoForm(key);
+  f.provTexto = upper(f.provQ || '', 80); f.provNuevo = true; f.campos.proveedor = ''; f.provQ = '';
+  renderMain(); setTimeout(() => { const i = document.getElementById('provNuevoIn'); if (i) i.focus(); }, 50);
 }
 function cancelarProveedorNuevo(key) {
   const f = estadoForm(key); f.provNuevo = false; f.provTexto = ''; f.campos.proveedor = ''; renderMain();
@@ -683,7 +716,7 @@ function guardarProveedorNuevo(key) {
   if (!nombre || !slug(nombre)) return toast('Escribe el nombre del proveedor.');
   const yaEsta = listaProveedores().includes(nombre);
   if (!yaEsta) guardarProveedorDB(nombre);
-  f.provNuevo = false; f.provTexto = ''; f.campos.proveedor = nombre;
+  f.provNuevo = false; f.provTexto = ''; f.provQ = ''; f.campos.proveedor = nombre;
   toast(yaEsta ? 'Ese proveedor ya existía: quedó seleccionado.' : 'Proveedor creado y seleccionado.');
   renderMain();
 }
@@ -1782,20 +1815,38 @@ function renderAdmin() {
 
 /* [PROVEEDORES] Admin: ver, agregar y activar/desactivar proveedores de Recepción */
 function htmlProveedores() {
-  const extra = S.proveedoresDB.filter(p => !PROVEEDORES_BASE.includes(upper(p.nombre))).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
   return `
   <div class="card"><h2>Agregar proveedor</h2>
     <p class="hint">Lo que agregues aquí aparece en <b>Recepción → Proveedor</b>. Lo que se cree con “Crear otro” en Recepción aparece aquí.</p>
     <div class="grid2"><div><label class="lbl">Nombre del proveedor</label><input class="in" id="npNombre" style="text-transform:uppercase" placeholder="EJ. NUEVO PROVEEDOR"></div></div>
     <div class="actions"><button class="btn btn-main" onclick="agregarProveedorAdmin()">Agregar proveedor</button></div>
   </div>
-  <div class="card"><h2>Proveedores (${PROVEEDORES_BASE.length + extra.length})</h2>
-    ${PROVEEDORES_BASE.map(n => `<div class="user-row"><b>${esc(n)}</b> <span class="hint" style="margin:0">· fijo</span></div>`).join('')}
-    ${extra.map(p => `<div class="user-row" style="display:flex;justify-content:space-between;align-items:center;gap:8px;${p.activo === false ? 'opacity:.6' : ''}">
+  <div class="card" id="provAdminCard">${htmlListaProvAdmin()}</div>`;
+}
+function htmlListaProvAdmin() {
+  const q = provNorm(S.provQAdmin);
+  const base = PROVEEDORES_BASE.filter(n => !q || provNorm(n).includes(q));
+  const todos = S.proveedoresDB.filter(p => !PROVEEDORES_BASE.includes(upper(p.nombre)));
+  const extra = todos.filter(p => !q || provNorm(p.nombre).includes(q)).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
+  return `<h2>Proveedores (${PROVEEDORES_BASE.length + todos.length})</h2>
+    <input class="in" id="provAdminQ" autocomplete="off" style="text-transform:uppercase;margin-bottom:10px" placeholder="🔍 Buscar proveedor…" value="${esc(S.provQAdmin || '')}" oninput="filtrarProvAdmin(this.value)">
+    <div id="provAdminLista">${provAdminFilas(base, extra)}</div>`;
+}
+function provAdminFilas(base, extra) {
+  const filas = base.map(n => `<div class="user-row"><b>${esc(n)}</b> <span class="hint" style="margin:0">· fijo</span></div>`).join('')
+    + extra.map(p => `<div class="user-row" style="display:flex;justify-content:space-between;align-items:center;gap:8px;${p.activo === false ? 'opacity:.6' : ''}">
       <div><b>${esc(p.nombre)}</b>${p.activo === false ? ' <span class="hint" style="margin:0">· desactivado</span>' : ''}</div>
       <button class="btn btn-out btn-sm" onclick="alternarProveedor('${esc(p.id)}',${p.activo === false})">${p.activo === false ? 'Activar' : 'Desactivar'}</button>
-    </div>`).join('')}
-  </div>`;
+    </div>`).join('');
+  return filas || '<div class="empty">Sin resultados.</div>';
+}
+function filtrarProvAdmin(q) {
+  S.provQAdmin = q;
+  const nq = provNorm(q);
+  const base = PROVEEDORES_BASE.filter(n => !nq || provNorm(n).includes(nq));
+  const extra = S.proveedoresDB.filter(p => !PROVEEDORES_BASE.includes(upper(p.nombre)) && (!nq || provNorm(p.nombre).includes(nq)))
+    .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
+  const box = document.getElementById('provAdminLista'); if (box) box.innerHTML = provAdminFilas(base, extra);
 }
 function agregarProveedorAdmin() {
   const el = document.getElementById('npNombre'), nombre = upper(el.value, 80);
