@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.7';
+const APP_VERSION = 'bodega-3.3.8';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -428,9 +428,13 @@ function cfgDe(tab) {
       return { key: dev ? 'DEVOLUCION' : 'CARGA', etapa: dev ? 'DEVOLUCION' : 'CARGA', area: 'TERMINADO', limitar: !dev, campos: ['asesor', 'fecha', 'nota'], seg: segC };
     }
     case 'DANO': {
+      /* [DAÑOS-RECEPCIÓN] Quien solo tiene la etapa Recepción únicamente registra daños de insumos */
+      const soloInsumos = !S.esAdmin && S.roles.length > 0 && S.roles.every(r => r === 'RECEPCION');
+      if (soloInsumos) S.modo.DANO = 'INSUMOS';
       const a = S.modo.DANO;
+      const opsDano = [['INSUMOS', 'Insumos'], ['TERMINADO', 'P. terminado'], ['ENVASES', 'Envases vacíos']];
       return { key: 'DANO_' + a, etapa: 'DANO', area: a, limitar: true, campos: ['motivo', 'fecha', 'nota'],
-        seg: { modo: 'DANO', ops: [['INSUMOS', 'Insumos'], ['TERMINADO', 'P. terminado'], ['ENVASES', 'Envases vacíos']] } };
+        seg: { modo: 'DANO', ops: soloInsumos ? opsDano.slice(0, 1) : opsDano } };
     }
     case 'AJUSTE': {
       const a = S.modo.AJUSTE;
