@@ -42,7 +42,7 @@ const _secApp = firebase.initializeApp(firebaseConfig, 'secundariaBodega');
 const _secAuth = _secApp.auth();
 const TS = () => firebase.firestore.FieldValue.serverTimestamp();
 
-const APP_VERSION = 'bodega-3.3.4';
+const APP_VERSION = 'bodega-3.3.5';
 const DOMINIO_LOGIN = '@luanaqua.app';
 function emailDeUsuario(u) {
   const limpio = String(u || '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '');
@@ -443,6 +443,7 @@ function estadoForm(key) {
   if (!S.form[key]) S.form[key] = { qty: {}, campos: { fecha: hoy(), motivo: 'ROTO' }, q: '' };
   if (!S.form[key].precio) S.form[key].precio = {}; /* [PRECIO] */
   if (!S.form[key].iva) S.form[key].iva = {}; /* [IVA] % de IVA por producto */
+  if (!S.esAdmin) S.form[key].campos.fecha = hoy(); /* [FECHA] solo el administrador puede cambiar la fecha; el resto siempre usa la de hoy */
   return S.form[key];
 }
 function firmaFormulario(tab) {
@@ -496,7 +497,9 @@ function campoHTML(c, f, campo) {
   const v = f.campos[campo] ?? '';
   const on = `oninput="setCampo('${c.key}','${campo}',this.value)"`;
   switch (campo) {
-    case 'fecha': return `<div><label class="lbl">Fecha</label><input class="in" type="date" value="${esc(v)}" max="${hoy()}" ${on}></div>`;
+    case 'fecha': return S.esAdmin
+      ? `<div><label class="lbl">Fecha</label><input class="in" type="date" value="${esc(v)}" max="${hoy()}" ${on}></div>`
+      : `<div><label class="lbl">Fecha</label><input class="in" type="date" value="${hoy()}" disabled title="La fecha solo la cambia el administrador"></div>`; /* [FECHA] */
     case 'proveedor': { /* [PROVEEDORES] lista desplegable + CREAR OTRO */
       const lista = listaProveedores(), vU = upper(v), crear = !!f.provNuevo;
       const opts = vU && !lista.includes(vU) ? [...lista, vU] : lista; /* el valor ya elegido nunca se pierde */
