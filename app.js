@@ -287,6 +287,8 @@ function calcularStock() {
             I(it.id).prod += q - d - r - p; I(it.id).dano += d; I(it.id).perd += p;
             /* [PRODUCCIÓN→PT] Llega a producción: si lo envió Recepción, solo lo que Producción confirmó recibido */
             if (m.entrega?.origen === 'RECEPCION') L(it.id).rec += Number(m.entrega.recibido?.[it.id]) || 0;
+            else if (m.entrega?.destino === 'TERMINADO') { /* [DIRECTO→PT] no pasa por producción: entra a P. terminado cuando Recepción confirma */
+              if (m.entrega.estado === 'CONFIRMADA') P(it.nombre).term += q - d - r - p; }
             else L(it.id).rec += q - d - r - p; }
           break;
         case 'RETORNO_ENVASE': E(it.nombre).ret += q; break;
@@ -513,7 +515,7 @@ function cfgDe(tab) {
       if (S.modo.PRODUCCION === 'PRODUCIR') return { key: 'PRODUCIR', etapa: 'PRODUCIDO', area: 'TERMINADO', limitar: false, produce: true, campos: ['fecha', 'nota'], seg: segP };
       const env = S.modo.PRODUCCION === 'ENVASES';
       return { key: env ? 'PRODUCCION_ENV' : 'PRODUCCION', etapa: 'PRODUCCION', area: env ? 'ENVASES' : 'INSUMOS', limitar: true,
-        campos: !env && requiereAvisoRecepcion() ? ['autoriza', 'motivoSalida', 'fecha', 'nota'] : ['fecha', 'nota'],
+        campos: !env && requiereAvisoRecepcion() ? ['autoriza', 'motivoSalida', 'directoPT', 'fecha', 'nota'] : ['fecha', 'nota'],
         seg: segP };
     }
     case 'CARGA': {
@@ -645,6 +647,7 @@ function campoHTML(c, f, campo) {
           <option value="">— Selecciona —</option>${ops.map(o => `<option value="${esc(o)}" ${o === v ? 'selected' : ''}>${esc(o === 'OTRO' ? 'OTRO (escribir)' : o)}</option>`).join('')}</select>
         <input class="in" style="margin-top:6px;text-transform:uppercase;${v === 'OTRO' ? '' : 'display:none'}" value="${esc(f.campos[otro] || '')}" placeholder="${campo === 'autoriza' ? 'Nombre de quien autoriza' : 'Escribe el motivo'}" oninput="setCampo('${c.key}','${otro}',this.value)"></div>`;
     }
+    case 'directoPT': return `<div style="grid-column:1/-1"><label style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:2px solid var(--line);border-radius:10px;cursor:pointer"><input type="checkbox" style="width:22px;height:22px;flex:none" ${f.campos.directoPT ? 'checked' : ''} onchange="setCampo('${c.key}','directoPT',this.checked)"><span><b>➜ Va directo a Producto terminado</b><br><span class="hint">Márcalo solo si es producto ya listo (pacas, galón…). Cuando Recepción confirme, entra a P. terminado y NO a "En producción".</span></span></label></div>`;
     case 'motivo': return `<div><label class="lbl">Motivo</label><select class="in" onchange="setCampo('${c.key}','motivo',this.value)">
         ${MOTIVOS_DANO.map(m => `<option ${m === v ? 'selected' : ''}>${m}</option>`).join('')}</select></div>`;
   }
@@ -962,7 +965,7 @@ function confirmarGuardar(tab) {
   if (c.etapa === 'DANO') doc.motivo = f.campos.motivo || 'OTRO';
   /* [ENTREGA] Recepción envía → Producción confirma; Producción saca sola → Recepción confirma */
   if (c.envio) doc.entrega = { origen: 'RECEPCION', estado: 'PENDIENTE_PRODUCCION' };
-  else if (c.etapa === 'PRODUCCION' && c.area === 'INSUMOS' && requiereAvisoRecepcion()) doc.entrega = { origen: 'PRODUCCION', estado: 'PENDIENTE_RECEPCION', autorizadoPor: valorAutoriza(f), motivoSalida: valorMotivoSalida(f) };
+  else if (c.etapa === 'PRODUCCION' && c.area === 'INSUMOS' && requiereAvisoRecepcion()) doc.entrega = { origen: 'PRODUCCION', estado: 'PENDIENTE_RECEPCION', autorizadoPor: valorAutoriza(f), motivoSalida: valorMotivoSalida(f), ...(f.campos.directoPT ? { destino: 'TERMINADO' } : {}) };
 
   const ref = db.collection('bodMovimientos').doc();
   ref.set(doc).catch(err => {
@@ -979,7 +982,7 @@ function confirmarGuardar(tab) {
   openModal(`<h3>✓ Guardado</h3>
     <div class="msg ${offline ? 'warn' : 'ok'}">${offline ? 'Estás sin internet: quedó guardado en este celular y se enviará solo al volver la conexión. No cierres sesión.' : 'Registro enviado.'}</div>
     <div class="mov-meta">${esc(c.envio ? 'Envío a producción' : ETAPAS[c.etapa].titulo)} · ${items.length} ítem(s)${doc.totalUnidades ? ' · ' + num(doc.totalUnidades) + ' unidades' : ''}${doc.valorTotal !== undefined ? ' · Total: <b>' + money(doc.valorTotal) + '</b>' : ''}${doc.ruta ? '<br>Asesor: <b>' + esc(doc.ruta) + '</b>' : ''}</div>
-    ${doc.entrega ? `<div class="msg info">${doc.entrega.origen === 'RECEPCION' ? 'Queda pendiente hasta que Producción confirme lo que recibió.' : 'Recepción recibirá un aviso para confirmar esta salida.'}</div>` : ''}
+    ${doc.entrega ? `<div class="msg info">${doc.entrega.origen === 'RECEPCION' ? 'Queda pendiente hasta que Producción confirme lo que recibió.' : (doc.entrega.destino === 'TERMINADO' ? 'Recepción recibirá un aviso. Al confirmar, entra directo a Producto terminado.' : 'Recepción recibirá un aviso para confirmar esta salida.')}</div>` : ''}
     ${doc.envioPT ? `<div class="msg info">Enviado a Producto terminado. Queda pendiente hasta que lo confirme.</div>` : ''}
     <div class="actions"><button class="btn btn-out" style="flex:1" onclick="elegirImpresion('${ref.id}')">🖨 Imprimir comprobante</button>
       <button class="btn btn-main" style="flex:1" onclick="closeModal()">Listo</button></div>`);
@@ -1077,6 +1080,7 @@ function htmlMov(m, sinAcciones) {
     m.envioPT?.confirmadoPorNombre ? `Recibió P. terminado: <b>${esc(m.envioPT.confirmadoPorNombre)}</b>${m.envioPT.nota ? ' (' + esc(m.envioPT.nota) + ')' : ''}` : '', /* [PRODUCCIÓN→PT] */
     m.motivo ? `Motivo: <b>${esc(m.motivo)}</b>` : '',
     m.entrega?.autorizadoPor ? `Autorizó: <b>${esc(m.entrega.autorizadoPor)}</b> (${esc(m.entrega.motivoSalida || '')})` : '',
+    m.entrega?.destino === 'TERMINADO' ? `<b style="color:var(--ok)">➜ DIRECTO A P. TERMINADO</b>${m.entrega.estado === 'CONFIRMADA' ? '' : ' (entra al confirmar Recepción)'}` : '',
     `Por: <b>${esc(m.creadoPorNombre || '-')}</b>`,
     m.nota ? `Obs.: ${esc(m.nota)}` : '',
     m.entrega?.estado === 'CANCELADA' ? `<span style="color:var(--muted)">ENVÍO CANCELADO por ${esc(m.entrega.canceladoPorNombre || '-')}: ${esc(m.entrega.motivoCancelacion || '')} (no cuenta en el stock)</span>` : '',
@@ -1712,7 +1716,7 @@ function guardarConfirmRecepcion(id, ok) {
   const m = S.movs.find(x => x._id === id); if (!m || m.entrega?.estado !== 'PENDIENTE_RECEPCION') return closeModal();
   const nota = upper($('#notaEntrega')?.value, 300);
   if (!ok && !nota) return alert('Escribe en la observación qué no está conforme.');
-  if (!confirm(ok ? '¿Confirmas que Producción retiró exactamente estos insumos?' : '¿Marcar esta salida como NO CONFORME?')) return;
+  if (!confirm(ok ? (m.entrega.destino === 'TERMINADO' ? '¿Confirmas que Producción retiró exactamente esto? Entrará directo a Producto terminado.' : '¿Confirmas que Producción retiró exactamente estos insumos?') : '¿Marcar esta salida como NO CONFORME?')) return;
   db.collection('bodMovimientos').doc(id).update({
     'entrega.estado': ok ? 'CONFIRMADA' : 'CON_DIFERENCIA', 'entrega.recepcionConforme': ok, 'entrega.notaRecepcion': nota,
     'entrega.recepcionPor': S.user.uid, 'entrega.recepcionPorNombre': S.nombre, 'entrega.recepcionEn': TS(), 'entrega.recepcionLocal': Date.now()
