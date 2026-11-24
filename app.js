@@ -382,7 +382,11 @@ function renderFacturacion() {
     return `<div class="mov" id="fac_${esc(m._id)}">
       <div class="mov-top"><span class="badge" style="background:var(--e1bg);color:var(--e1)">${edit ? 'Corrigiendo' : 'Pendiente de factura'}</span><span class="when">${fmtFecha(m.fecha)} ${fmtHora(msDe(m))}</span></div>
       <div class="mov-meta">Proveedor: <b>${esc(m.proveedor || '-')}</b>${m.documento ? ' · Doc: <b>' + esc(m.documento) + '</b>' : ''} · Recibió: <b>${esc(m.creadoPorNombre || '-')}</b> · ${num(m.totalUnidades)} unidades${m.nota ? ' · Obs.: ' + esc(m.nota) : ''}</div>
-      <div style="margin:8px 0">${filas}</div>
+      <div style="margin:8px 0" id="fr_${esc(m._id)}">${filas}</div>
+      <div style="margin:4px 0 8px"><label class="lbl">¿Falta un producto de la factura? Agrégalo del catálogo</label>
+        <div style="display:flex;gap:6px"><input class="in" list="dl_${esc(m._id)}" id="fsel_${esc(m._id)}" placeholder="🔍 Buscar producto del catálogo…" style="flex:1">
+          <datalist id="dl_${esc(m._id)}">${itemsDeArea('INSUMOS', calcularStock()).filter(it => !(m.items || []).some(x => x.id === it.id)).map(it => `<option value="${esc(it.nombre + ' · ' + (it.categoria || ''))}"></option>`).join('')}</datalist>
+          <button type="button" class="btn btn-out btn-sm" onclick="agregarLineaFactura('${esc(m._id)}')">+ Agregar</button></div></div>
       <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:8px 0"><input type="checkbox" data-f="conf" ${edit ? 'checked' : ''} onchange="calcFactura('${esc(m._id)}')"> Confirmo que las cantidades coinciden con la factura</label>
       <div class="grid2">
         <div><label class="lbl">IVA % de la factura</label><input class="in" type="number" inputmode="decimal" min="0" max="100" step="any" data-f="iva" placeholder="Ej. 15" value="${edit && f.ivaPct !== undefined ? f.ivaPct : ''}" oninput="calcFactura('${esc(m._id)}')"></div>
@@ -407,12 +411,34 @@ function renderFacturacion() {
 /* Lee lo escrito en la tarjeta: precios por producto (subtotal = Σ cantidad × precio), IVA % y total */
 function leerFactura(id) {
   const box = document.getElementById('fac_' + id); if (!box) return null;
-  const precios = [...box.querySelectorAll('[data-f=precio]')].map(el => ({ txt: el.value, n: Number(String(el.value).replace(',', '.')), q: Number(el.dataset.q) || 0 }));
-  const okPrecios = precios.length > 0 && precios.every(x => x.txt !== '' && x.n >= 0);
+  const filas = [...box.querySelectorAll('.item[data-k], .item[data-extra]')];
+  const precios = filas.map(r => {
+    const pi = r.querySelector('[data-f=precio]'), ci = r.querySelector('[data-f=cant]');
+    const q = ci ? Math.floor(Number(ci.value) || 0) : Number(pi.dataset.q) || 0;
+    return { row: r, txt: pi.value, n: Number(String(pi.value).replace(',', '.')), q, extra: !!ci };
+  });
+  const okPrecios = precios.length > 0 && precios.every(x => x.txt !== '' && x.n >= 0 && x.q > 0);
   const sub = r2(precios.reduce((a, x) => a + (x.n >= 0 ? x.n * x.q : 0), 0));
   const ivaIn = box.querySelector('[data-f=iva]').value, totIn = box.querySelector('[data-f=total]').value;
   const iva = Number(String(ivaIn).replace(',', '.')), tot = Number(String(totIn).replace(',', '.'));
   return { box, precios, okPrecios, sub, okIva: ivaIn !== '' && iva >= 0 && iva <= 100, okTot: totIn !== '' && tot > 0, iva, tot, conf: box.querySelector('[data-f=conf]').checked };
+}
+/* Agrega a la factura un producto del catálogo que Recepción no registró (Oficina escribe la cantidad) */
+function agregarLineaFactura(id) {
+  const inp = document.getElementById('fsel_' + id), cont = document.getElementById('fr_' + id); if (!inp || !cont) return;
+  const it = itemsDeArea('INSUMOS', calcularStock()).find(x => (x.nombre + ' · ' + (x.categoria || '')) === inp.value);
+  if (!it) return alert('Elige un producto de la lista del catálogo. Si no aparece, créalo primero en ⚙ Admin → Catálogo de insumos.');
+  if (cont.querySelector('[data-id="' + CSS.escape(it.id) + '"]')) return alert('Ese producto ya está en la factura.');
+  const div = document.createElement('div');
+  div.className = 'item'; div.dataset.extra = '1'; div.dataset.id = it.id; div.dataset.nm = it.nombre; div.dataset.cat = it.categoria || '';
+  div.style.flexWrap = 'wrap';
+  div.innerHTML = `<div class="nm">${esc(it.nombre)}<small>${esc(it.categoria || '')} · agregado por Oficina</small></div>
+    <div class="qty" style="min-width:110px;justify-content:flex-end"><input type="number" inputmode="numeric" min="1" step="1" data-f="cant" placeholder="Cant." oninput="calcFactura('${esc(id)}')" style="width:80px"></div>
+    <div class="pr"><label>P. unit. $</label><input type="number" inputmode="decimal" min="0" step="any" data-f="precio" placeholder="0.00" oninput="calcFactura('${esc(id)}')">
+      <button type="button" class="btn btn-out btn-sm" style="margin-left:auto" onclick="this.closest('.item').remove();calcFactura('${esc(id)}')">Quitar</button></div>`;
+  cont.appendChild(div);
+  inp.value = ''; calcFactura(id);
+  const c = div.querySelector('[data-f=cant]'); if (c) c.focus();
 }
 /* Compara en vivo: subtotal + IVA contra el total que escribió Oficina */
 function calcFactura(id) {
@@ -432,14 +458,20 @@ function guardarFactura(id) {
   if (!d.okIva) return alert('Escribe el IVA % (puede ser 0).');
   if (!d.okTot) return alert('Escribe el total de la factura.');
   const valIva = r2(d.sub * d.iva / 100), esperado = r2(d.sub + valIva), dif = r2(d.tot - esperado);
+  const nAgr = d.precios.filter(x => x.extra).length;
+  if (nAgr && !confirm(`Agregaste ${nAgr} producto(s) que Recepción no registró. Al guardar, esas cantidades SUMAN al stock de la bodega.\n\n¿Continuar?`)) return;
   if (Math.abs(dif) > 0.02 && !confirm(`El total escrito (${money(d.tot)}) no cuadra con cantidad × precio + IVA (${money(esperado)}). Diferencia: ${money(dif)}.\n\n¿Guardar de todas formas?`)) return;
-  const items = (m.items || []).map((i, k) => {
-    const pu = Math.round(d.precios[k].n * 10000) / 10000, sub = r2((Number(i.cantidad) || 0) * pu), iv = r2(sub * d.iva / 100);
-    return { ...i, precioUnitario: pu, ivaPct: d.iva, iva: iv, total: r2(sub + iv) };
+  const items = d.precios.map(x => {
+    const base = x.extra
+      ? { id: x.row.dataset.id, nombre: x.row.dataset.nm, ...(x.row.dataset.cat ? { categoria: x.row.dataset.cat } : {}), cantidad: x.q, agregadoEnFactura: true }
+      : (m.items || [])[Number(x.row.dataset.k)];
+    const pu = Math.round(x.n * 10000) / 10000, sub = r2(x.q * pu), iv = r2(sub * d.iva / 100);
+    return { ...base, precioUnitario: pu, ivaPct: d.iva, iva: iv, total: r2(sub + iv) };
   });
+  const agregadas = items.filter(i => i.agregadoEnFactura).length;
   db.collection('bodMovimientos').doc(id).update({
-    items, valorTotal: d.tot,
-    factura: { estado: 'COMPLETADA', cantidadesConfirmadas: true, subtotal: d.sub, ivaPct: d.iva, iva: valIva, totalFactura: d.tot, totalCalculado: esperado, diferencia: dif,
+    items, valorTotal: d.tot, totalUnidades: items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0),
+    factura: { estado: 'COMPLETADA', cantidadesConfirmadas: true, lineasAgregadas: agregadas, subtotal: d.sub, ivaPct: d.iva, iva: valIva, totalFactura: d.tot, totalCalculado: esperado, diferencia: dif,
       completadoPor: S.user.uid, completadoPorNombre: S.nombre, completadoEn: TS(), completadoLocal: Date.now() }
   }).then(() => toast('Factura completada'))
     .catch(e => alert('❌ No se pudo guardar: ' + (e.code === 'permission-denied' ? 'faltan publicar las reglas de Firestore para Facturación.' : e.message)));
