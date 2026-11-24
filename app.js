@@ -1380,7 +1380,10 @@ function renderTerminado() {
   const e = ETAPAS.TERMINADO, todos = enviosPT();
   const pend = todos.filter(m => m.envioPT.estado === 'PENDIENTE').sort((a, b) => (a.fecha || '').localeCompare(b.fecha || '') || msDe(a) - msDe(b));
   const hechos = todos.filter(m => m.envioPT.estado !== 'PENDIENTE').sort((a, b) => (b.envioPT.confirmadoLocal || 0) - (a.envioPT.confirmadoLocal || 0)).slice(0, 15);
-  return `<div class="card">
+  const dir = S.movs.filter(m => !m.anulado && m.entrega?.destino === 'TERMINADO' && m.entrega.estado === 'PENDIENTE_TERMINADO').sort((a, b) => msDe(a) - msDe(b));
+  const dirHtml = dir.length ? `<div class="card" style="border:2px solid var(--amber)"><h2 style="color:var(--amber)">🔔 Retiros directos desde Recepción por confirmar (${dir.length})</h2>
+      <p class="hint">Producción los retiró de Recepción para P. terminado. Cuenta y confirma.</p>${dir.map(m => htmlMov(m)).join('')}</div>` : '';
+  return `${dirHtml}<div class="card">
     <div class="step-head"><div class="step-num" style="background:var(--${e.c}bg);color:var(--${e.c})">${esc(e.n)}</div>
       <div><h2>${esc(e.titulo)}</h2><p>${esc(e.desc)}</p></div></div>
     <div class="msg info">El producto terminado entra solo con lo que confirmas de los envíos de Producción. Lo aceptado también suma al Inventario del dashboard.</div></div>
@@ -1543,6 +1546,7 @@ function guardarReceta(el) {
 const ESTADOS_ENTREGA = {
   PENDIENTE_PRODUCCION: { t: 'Pendiente: Producción confirma', bg: 'var(--amberbg)', c: 'var(--amber)' },
   PENDIENTE_DEVOLUCION: { t: 'Pendiente: Recepción revisa dañados/faltantes', bg: 'var(--amberbg)', c: 'var(--amber)' },
+  PENDIENTE_TERMINADO:  { t: 'Pendiente: P. terminado confirma', bg: 'var(--amberbg)', c: 'var(--amber)' },
   PENDIENTE_RECEPCION:  { t: 'Pendiente: Recepción confirma salida', bg: 'var(--amberbg)', c: 'var(--amber)' },
   CONFIRMADA:           { t: '✓ Cuadrado', bg: 'var(--okbg)', c: 'var(--ok)' },
   CON_DIFERENCIA:       { t: '⚠ Con diferencia', bg: 'var(--redbg)', c: 'var(--red)' },
@@ -1560,6 +1564,7 @@ function accionEntrega(m) {
   const est = m.entrega.estado;
   if (est === 'PENDIENTE_PRODUCCION' && puede('PRODUCCION')) return '✔ Confirmar lo recibido';
   if (est === 'PENDIENTE_RECEPCION' && puede('RECEPCION')) return '✔ Confirmar salida';
+  if (est === 'PENDIENTE_TERMINADO' && puede('TERMINADO')) return '✔ Confirmar recibido en P. terminado'; /* [DIRECTO→PT] */
   if (est === 'PENDIENTE_DEVOLUCION' && puede('RECEPCION')) return Number(m.entrega.totalFaltante) > 0 ? '✔ Revisar dañados y faltantes' : '✔ Recibir dañados';
   return '';
 }
@@ -1596,9 +1601,9 @@ function htmlPendientesEntrega(tab) {
 function avisoEntregasInicio() {
   const n = entregasAbiertas().filter(m => accionEntrega(m)).length;
   if (!n) return '';
-  const destino = puede('PRODUCCION') && entregasAbiertas().some(m => m.entrega.estado === 'PENDIENTE_PRODUCCION' && accionEntrega(m)) ? 'PRODUCCION' : 'RECEPCION';
+  const destino = entregasAbiertas().some(m => m.entrega.estado === 'PENDIENTE_TERMINADO' && accionEntrega(m)) ? 'TERMINADO' : puede('PRODUCCION') && entregasAbiertas().some(m => m.entrega.estado === 'PENDIENTE_PRODUCCION' && accionEntrega(m)) ? 'PRODUCCION' : 'RECEPCION';
   return `<div class="msg warn" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
-    <span>🔔 Tienes <b>${n}</b> entrega(s) entre Recepción y Producción por confirmar.</span>
+    <span>🔔 Tienes <b>${n}</b> entrega(s) por confirmar (Recepción / Producción / P. terminado).</span>
     <button class="btn btn-main btn-sm" onclick="irA('${destino}')">Ver</button></div>`;
 }
 
@@ -1623,6 +1628,18 @@ function abrirConfirmarEntrega(id) {
       <div class="actions"><button class="btn btn-out" style="flex:1" onclick="closeModal()">Cancelar</button>
         <button class="btn btn-main" style="flex:2" id="btnEntrega" onclick="guardarConfirmProduccion('${id}')">Confirmar recepción</button></div>`);
     recalcEntrega();
+    return;
+  }
+  if (est === 'PENDIENTE_TERMINADO') { /* [DIRECTO→PT] */
+    openModal(`<h3>✔ Confirmar recibido en P. terminado</h3>${cab}
+      <div class="msg info">Producción retiró esto de Recepción y viene directo a Producto terminado. Cuenta y confirma.</div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Producto</th><th class="n">Llegó</th></tr></thead><tbody>
+        ${(m.items || []).map(i => `<tr><td>${esc(i.nombre)}${i.categoria ? `<br><small style="color:var(--muted)">${esc(i.categoria)}</small>` : ''}</td><td class="n"><b>${num(i.cantidad)}</b></td></tr>`).join('')}
+      </tbody><tfoot><tr><td><b>TOTAL</b></td><td class="n"><b>${num(m.totalUnidades)}</b></td></tr></tfoot></table></div>
+      <label class="lbl">Observación (obligatoria si no está conforme)</label><textarea class="in" id="notaEntrega" style="text-transform:uppercase"></textarea>
+      <div class="actions"><button class="btn btn-out" style="flex:1" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-red" style="flex:1" onclick="guardarConfirmTerminado('${id}',false)">⚠ No conforme</button>
+        <button class="btn btn-main" style="flex:1" onclick="guardarConfirmTerminado('${id}',true)">✓ Conforme</button></div>`);
     return;
   }
   if (est === 'PENDIENTE_RECEPCION') {
@@ -1716,12 +1733,23 @@ function guardarConfirmRecepcion(id, ok) {
   const m = S.movs.find(x => x._id === id); if (!m || m.entrega?.estado !== 'PENDIENTE_RECEPCION') return closeModal();
   const nota = upper($('#notaEntrega')?.value, 300);
   if (!ok && !nota) return alert('Escribe en la observación qué no está conforme.');
-  if (!confirm(ok ? (m.entrega.destino === 'TERMINADO' ? '¿Confirmas que Producción retiró exactamente esto? Entrará directo a Producto terminado.' : '¿Confirmas que Producción retiró exactamente estos insumos?') : '¿Marcar esta salida como NO CONFORME?')) return;
+  if (!confirm(ok ? (m.entrega.destino === 'TERMINADO' ? '¿Confirmas que Producción retiró exactamente esto? Quedará pendiente de que P. terminado lo confirme.' : '¿Confirmas que Producción retiró exactamente estos insumos?') : '¿Marcar esta salida como NO CONFORME?')) return;
   db.collection('bodMovimientos').doc(id).update({
-    'entrega.estado': ok ? 'CONFIRMADA' : 'CON_DIFERENCIA', 'entrega.recepcionConforme': ok, 'entrega.notaRecepcion': nota,
+    'entrega.estado': ok ? (m.entrega.destino === 'TERMINADO' ? 'PENDIENTE_TERMINADO' : 'CONFIRMADA') : 'CON_DIFERENCIA', 'entrega.recepcionConforme': ok, 'entrega.notaRecepcion': nota,
     'entrega.recepcionPor': S.user.uid, 'entrega.recepcionPorNombre': S.nombre, 'entrega.recepcionEn': TS(), 'entrega.recepcionLocal': Date.now()
   }).catch(e => alert('❌ No se pudo guardar la confirmación: ' + (e.code === 'permission-denied' ? 'faltan publicar las reglas de Firestore para las entregas.' : e.message)));
-  closeModal(); toast(ok ? 'Salida confirmada' : 'Marcada como no conforme');
+  closeModal(); toast(ok ? (m.entrega.destino === 'TERMINADO' ? 'Salida confirmada: pasa a P. terminado' : 'Salida confirmada') : 'Marcada como no conforme');
+}
+function guardarConfirmTerminado(id, ok) { /* [DIRECTO→PT] */
+  const m = S.movs.find(x => x._id === id); if (!m || m.entrega?.estado !== 'PENDIENTE_TERMINADO') return closeModal();
+  const nota = upper($('#notaEntrega')?.value, 300);
+  if (!ok && !nota) return alert('Escribe en la observación qué no está conforme.');
+  if (!confirm(ok ? '¿Confirmas que recibiste exactamente esto en Producto terminado?' : '¿Marcar como NO CONFORME?')) return;
+  db.collection('bodMovimientos').doc(id).update({
+    'entrega.estado': ok ? 'CONFIRMADA' : 'CON_DIFERENCIA', 'entrega.terminadoConforme': ok, 'entrega.notaTerminado': nota,
+    'entrega.terminadoPor': S.user.uid, 'entrega.terminadoPorNombre': S.nombre, 'entrega.terminadoEn': TS(), 'entrega.terminadoLocal': Date.now()
+  }).catch(e => alert('❌ No se pudo guardar la confirmación: ' + (e.code === 'permission-denied' ? 'faltan publicar las reglas de Firestore (confirmación de P. terminado).' : e.message)));
+  closeModal(); toast(ok ? 'Recibido en P. terminado' : 'Marcado como no conforme');
 }
 function leerFaltantes() {
   return [...document.querySelectorAll('#tblFalt tbody tr')].map(tr => ({
