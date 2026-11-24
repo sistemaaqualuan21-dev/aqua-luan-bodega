@@ -579,7 +579,7 @@ function htmlFormulario(tab) {
     lista = `<div class="empty">${c.area === 'INSUMOS' ? 'No hay insumos en el catálogo.' + (S.esAdmin ? ' Cárgalos en ⚙ Admin → Catálogo.' : ' Pide al administrador que cargue el catálogo.') : 'No hay productos activos en el catálogo de la app de pedidos.'}</div>`;
   } else {
     let grupos = (c.area === 'INSUMOS' || c.area === 'LINEA') ? CATEGORIAS.map(cat => [cat, items.filter(i => i.categoria === cat)]).filter(g => g[1].length) : [['PRODUCTOS', items]];
-    lista = `<input class="in picker-search" placeholder="Buscar…" value="${esc(f.q)}" oninput="filtrar('${c.key}',this.value)">` +
+    lista = `<input class="in picker-search" ${c.precio ? 'style="position:sticky;top:0;z-index:5;border:2px solid var(--navy)"' : ''} placeholder="${c.precio ? '🔍 Buscar producto…' : 'Buscar…'}" value="${esc(f.q)}" oninput="filtrar('${c.key}',this.value)">` +
       grupos.map(([cat, arr]) => `<div class="cat" data-cat><div class="cat-title"><span>${esc((tab === 'RECEPCION' || tab === 'PRODUCCION' || tab === 'DANO') && CATEGORIAS.includes(cat) ? cat + ' POR UNIDADES' : cat)}</span><span>${arr.length}</span></div>
         ${arr.map(it => {
           const v = f.qty[it.id];
@@ -618,10 +618,7 @@ function htmlFormulario(tab) {
 function htmlPrecioItem(c, f, it) {
   const p = f.precio[it.id], q = f.qty[it.id] || 0;
   return `<div class="pr"><label>P. unit. $</label>
-    <input type="number" inputmode="decimal" min="0" step="any" value="${p ?? ''}" placeholder="0.00" class="${p > 0 ? 'has' : ''}" oninput="setPrecio('${c.key}',this)">
-    <label>IVA %</label>
-    <input type="number" inputmode="decimal" min="0" max="100" step="any" value="${f.iva[it.id] ?? ''}" placeholder="0" class="iva ${f.iva[it.id] > 0 ? 'has' : ''}" oninput="setIva('${c.key}',this)">
-    <span class="pr-tot">Total: <b>${money(totalLinea(f, it.id))}</b></span></div>`;
+    <input type="number" inputmode="decimal" min="0" step="any" value="${p ?? ''}" placeholder="0.00" class="${p > 0 ? 'has' : ''}" oninput="setPrecio('${c.key}',this)"></div>`;
 }
 /* [IVA] Subtotal (cantidad × precio), valor del IVA y total con IVA */
 function subtotalLinea(f, id) { return r2((f.qty[id] || 0) * (f.precio[id] || 0)); }
@@ -752,6 +749,7 @@ function setModo(modo, v) { S.modo[modo] = v; renderMain(); }
 function filtrar(key, q) {
   const f = estadoForm(key); f.q = q.trim().toUpperCase();
   document.querySelectorAll('.item').forEach(r => { r.style.display = !f.q || r.dataset.nm.includes(f.q) ? '' : 'none'; });
+  document.querySelectorAll('.cat[data-cat]').forEach(g => { g.style.display = !f.q || [...g.querySelectorAll('.item')].some(r => r.style.display !== 'none') ? '' : 'none'; }); /* oculta categorías sin resultados */
 }
 function setQty(key, inp) {
   const id = inp.closest('.item').dataset.id, raw = inp.value;
