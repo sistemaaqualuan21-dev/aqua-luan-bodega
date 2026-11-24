@@ -378,21 +378,17 @@ function renderFacturacion() {
     const filas = (m.items || []).map((i, k) => `<div class="item" data-k="${k}" style="flex-wrap:wrap">
         <div class="nm">${esc(i.nombre)}${i.categoria ? `<small>${esc(i.categoria)}</small>` : ''}</div>
         <div class="qty" style="min-width:90px;justify-content:flex-end"><b style="font-size:16px">${num(i.cantidad)}</b>&nbsp;<small style="color:var(--muted)">unid.</small></div>
-        <div class="pr"><label>P. unit. $</label><input type="number" inputmode="decimal" min="0" step="any" data-f="precio" data-q="${Number(i.cantidad) || 0}" placeholder="0.00" value="${i.precioUnitario > 0 ? i.precioUnitario : ''}" oninput="calcFactura('${esc(m._id)}')"></div></div>`).join('');
+        <div class="pr"><label>Precio total de la línea $</label><input type="number" inputmode="decimal" min="0" step="any" data-f="precio" data-q="${Number(i.cantidad) || 0}" placeholder="0.00" value="${i.precioUnitario > 0 ? r2((Number(i.cantidad) || 0) * i.precioUnitario) : ''}" oninput="calcFactura('${esc(m._id)}')"><small data-f="pu" style="color:var(--muted);font-weight:700;margin-left:6px"></small></div></div>`).join('');
     return `<div class="mov" id="fac_${esc(m._id)}">
       <div class="mov-top"><span class="badge" style="background:var(--e1bg);color:var(--e1)">${edit ? 'Corrigiendo' : 'Pendiente de factura'}</span><span class="when">${fmtFecha(m.fecha)} ${fmtHora(msDe(m))}</span></div>
       <div class="mov-meta">Proveedor: <b>${esc(m.proveedor || '-')}</b>${m.documento ? ' · Doc: <b>' + esc(m.documento) + '</b>' : ''} · Recibió: <b>${esc(m.creadoPorNombre || '-')}</b> · ${num(m.totalUnidades)} unidades${m.nota ? ' · Obs.: ' + esc(m.nota) : ''}</div>
-      <div style="margin:8px 0" id="fr_${esc(m._id)}">${filas}</div>
-      <div style="margin:4px 0 8px"><label class="lbl">¿Falta un producto de la factura? Agrégalo del catálogo</label>
-        <div style="display:flex;gap:6px"><input class="in" list="dl_${esc(m._id)}" id="fsel_${esc(m._id)}" placeholder="🔍 Buscar producto del catálogo…" style="flex:1">
-          <datalist id="dl_${esc(m._id)}">${itemsDeArea('INSUMOS', calcularStock()).filter(it => !(m.items || []).some(x => x.id === it.id)).map(it => `<option value="${esc(it.nombre + ' · ' + (it.categoria || ''))}"></option>`).join('')}</datalist>
-          <button type="button" class="btn btn-out btn-sm" onclick="agregarLineaFactura('${esc(m._id)}')">+ Agregar</button></div></div>
+      <div style="margin:8px 0">${filas}</div>
       <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:8px 0"><input type="checkbox" data-f="conf" ${edit ? 'checked' : ''} onchange="calcFactura('${esc(m._id)}')"> Confirmo que las cantidades coinciden con la factura</label>
       <div class="grid2">
         <div><label class="lbl">IVA % de la factura</label><input class="in" type="number" inputmode="decimal" min="0" max="100" step="any" data-f="iva" placeholder="Ej. 15" value="${edit && f.ivaPct !== undefined ? f.ivaPct : ''}" oninput="calcFactura('${esc(m._id)}')"></div>
-        <div><label class="lbl">Total de la factura $</label><input class="in" type="number" inputmode="decimal" min="0" step="any" data-f="total" placeholder="0.00" value="${edit && f.totalFactura !== undefined ? f.totalFactura : ''}" oninput="calcFactura('${esc(m._id)}')"></div>
+        <div><label class="lbl">VALOR TOTAL de la factura (con IVA) $</label><input class="in" type="number" inputmode="decimal" min="0" step="any" data-f="total" placeholder="0.00" value="${edit && f.totalFactura !== undefined ? f.totalFactura : ''}" oninput="calcFactura('${esc(m._id)}')"></div>
       </div>
-      <div class="msg" data-f="dif" style="background:var(--soft);color:var(--muted)">Escribe los precios, el IVA y el total para comparar.</div>
+      <div class="msg" data-f="dif" style="background:var(--soft);color:var(--muted)">Escribe los totales de línea, el IVA y el total para comparar.</div>
       <div class="actions"><button class="btn btn-main btn-sm" onclick="guardarFactura('${esc(m._id)}')">Guardar valores</button>
         ${edit ? `<button class="btn btn-out btn-sm" onclick="S.factEdit['${esc(m._id)}']=false;renderMain()">Cancelar</button>` : ''}</div></div>`;
   };
@@ -401,7 +397,7 @@ function renderFacturacion() {
       <div class="mov-meta">Proveedor: <b>${esc(m.proveedor || '-')}</b>${m.documento ? ' · Doc: <b>' + esc(m.documento) + '</b>' : ''}<br>Subtotal ${money(f.subtotal)} · IVA ${num(f.ivaPct)}% (${money(f.iva)}) · <b>Total factura ${money(f.totalFactura)}</b>${Math.abs(f.diferencia || 0) > 0.009 ? ' · <span style="color:var(--amber)">Diferencia ' + money(f.diferencia) + '</span>' : ''}<br>Completó: ${esc(f.completadoPorNombre || '-')}</div>
       <div class="actions"><button class="btn btn-out btn-sm" onclick="S.factEdit['${esc(m._id)}']=true;renderMain()">Corregir</button></div></div>`; };
   return `<div class="card"><h2>$ Facturación</h2>
-      <p class="hint">Recepción registra solo las <b>cantidades</b>. Aquí Oficina las <b>confirma</b> contra la factura del proveedor e ingresa los <b>precios unitarios</b>, el <b>IVA</b> y el <b>total</b>. Las cantidades no se pueden cambiar desde aquí.</p></div>
+      <p class="hint">Recepción registra solo las <b>cantidades</b>. Aquí Oficina las <b>confirma</b> contra la factura del proveedor y copia de la factura el <b>Precio Total</b> de cada línea (sin IVA), el <b>IVA %</b> y el <b>VALOR TOTAL</b>. El precio unitario lo calcula el sistema. Las cantidades no se pueden cambiar desde aquí.</p></div>
     <div class="card"><h2>Por completar (${pend.length})</h2>
       ${pend.length ? pend.map(m => tarjeta(m, false)).join('') : '<div class="empty">No hay facturas pendientes. ✓</div>'}</div>
     ${Object.keys(editables).some(k => editables[k]) ? `<div class="card"><h2>En corrección</h2>${hechas.filter(m => editables[m._id]).map(m => tarjeta(m, true)).join('')}</div>` : ''}
@@ -411,67 +407,43 @@ function renderFacturacion() {
 /* Lee lo escrito en la tarjeta: precios por producto (subtotal = Σ cantidad × precio), IVA % y total */
 function leerFactura(id) {
   const box = document.getElementById('fac_' + id); if (!box) return null;
-  const filas = [...box.querySelectorAll('.item[data-k], .item[data-extra]')];
-  const precios = filas.map(r => {
-    const pi = r.querySelector('[data-f=precio]'), ci = r.querySelector('[data-f=cant]');
-    const q = ci ? Math.floor(Number(ci.value) || 0) : Number(pi.dataset.q) || 0;
-    return { row: r, txt: pi.value, n: Number(String(pi.value).replace(',', '.')), q, extra: !!ci };
-  });
+  const precios = [...box.querySelectorAll('[data-f=precio]')].map(el => ({ txt: el.value, n: Number(String(el.value).replace(',', '.')), q: Number(el.dataset.q) || 0 }));
   const okPrecios = precios.length > 0 && precios.every(x => x.txt !== '' && x.n >= 0 && x.q > 0);
-  const sub = r2(precios.reduce((a, x) => a + (x.n >= 0 ? x.n * x.q : 0), 0));
+  const sub = r2(precios.reduce((a, x) => a + (x.n >= 0 ? x.n : 0), 0)); /* subtotal = suma de los totales de línea (sin IVA) tal como dice la factura */
   const ivaIn = box.querySelector('[data-f=iva]').value, totIn = box.querySelector('[data-f=total]').value;
   const iva = Number(String(ivaIn).replace(',', '.')), tot = Number(String(totIn).replace(',', '.'));
   return { box, precios, okPrecios, sub, okIva: ivaIn !== '' && iva >= 0 && iva <= 100, okTot: totIn !== '' && tot > 0, iva, tot, conf: box.querySelector('[data-f=conf]').checked };
 }
-/* Agrega a la factura un producto del catálogo que Recepción no registró (Oficina escribe la cantidad) */
-function agregarLineaFactura(id) {
-  const inp = document.getElementById('fsel_' + id), cont = document.getElementById('fr_' + id); if (!inp || !cont) return;
-  const it = itemsDeArea('INSUMOS', calcularStock()).find(x => (x.nombre + ' · ' + (x.categoria || '')) === inp.value);
-  if (!it) return alert('Elige un producto de la lista del catálogo. Si no aparece, créalo primero en ⚙ Admin → Catálogo de insumos.');
-  if (cont.querySelector('[data-id="' + CSS.escape(it.id) + '"]')) return alert('Ese producto ya está en la factura.');
-  const div = document.createElement('div');
-  div.className = 'item'; div.dataset.extra = '1'; div.dataset.id = it.id; div.dataset.nm = it.nombre; div.dataset.cat = it.categoria || '';
-  div.style.flexWrap = 'wrap';
-  div.innerHTML = `<div class="nm">${esc(it.nombre)}<small>${esc(it.categoria || '')} · agregado por Oficina</small></div>
-    <div class="qty" style="min-width:110px;justify-content:flex-end"><input type="number" inputmode="numeric" min="1" step="1" data-f="cant" placeholder="Cant." oninput="calcFactura('${esc(id)}')" style="width:80px"></div>
-    <div class="pr"><label>P. unit. $</label><input type="number" inputmode="decimal" min="0" step="any" data-f="precio" placeholder="0.00" oninput="calcFactura('${esc(id)}')">
-      <button type="button" class="btn btn-out btn-sm" style="margin-left:auto" onclick="this.closest('.item').remove();calcFactura('${esc(id)}')">Quitar</button></div>`;
-  cont.appendChild(div);
-  inp.value = ''; calcFactura(id);
-  const c = div.querySelector('[data-f=cant]'); if (c) c.focus();
-}
 /* Compara en vivo: subtotal + IVA contra el total que escribió Oficina */
 function calcFactura(id) {
   const d = leerFactura(id); if (!d) return;
+  d.box.querySelectorAll('[data-f=precio]').forEach(el => { /* precio unitario calculado = total de la línea ÷ cantidad */
+    const q = Number(el.dataset.q) || 0, n = Number(String(el.value).replace(',', '.')), u = el.parentNode.querySelector('[data-f=pu]');
+    if (u) u.textContent = el.value !== '' && q > 0 && n >= 0 ? '→ P. unit. $' + (Math.round(n / q * 1e6) / 1e6).toString() : '';
+  });
   const msg = d.box.querySelector('[data-f=dif]');
-  if (!d.okPrecios || !d.okIva || !d.okTot) { msg.className = 'msg'; msg.style.cssText = 'background:var(--soft);color:var(--muted)'; msg.textContent = 'Escribe los precios, el IVA y el total para comparar.'; return; }
+  if (!d.okPrecios || !d.okIva || !d.okTot) { msg.className = 'msg'; msg.style.cssText = 'background:var(--soft);color:var(--muted)'; msg.textContent = 'Escribe los totales de línea, el IVA y el total para comparar.'; return; }
   const valIva = r2(d.sub * d.iva / 100), esperado = r2(d.sub + valIva), dif = r2(d.tot - esperado);
   msg.style.cssText = '';
   if (Math.abs(dif) <= 0.02) { msg.className = 'msg ok'; msg.innerHTML = `✓ Cuadra: subtotal ${money(d.sub)} + IVA ${money(valIva)} = <b>${money(esperado)}</b>`; }
-  else { msg.className = 'msg warn'; msg.innerHTML = `⚠ No cuadra. Cantidad × precio (${money(d.sub)}) + IVA (${money(valIva)}) da <b>${money(esperado)}</b> y escribiste <b>${money(d.tot)}</b> (diferencia <b>${money(dif)}</b>). Revisa los precios o el total.`; }
+  else { msg.className = 'msg warn'; msg.innerHTML = `⚠ No cuadra. Subtotal de las líneas (${money(d.sub)}) + IVA (${money(valIva)}) da <b>${money(esperado)}</b> y escribiste <b>${money(d.tot)}</b> (diferencia <b>${money(dif)}</b>). Revisa los totales de línea o el total.`; }
 }
 function guardarFactura(id) {
   const m = S.movs.find(x => x._id === id), d = leerFactura(id); if (!m || !d) return;
   if (!puede('FACTURACION')) return alert('Tu usuario no tiene la etapa Facturación.');
   if (!d.conf) return alert('Marca la casilla para confirmar que las cantidades coinciden con la factura.');
-  if (!d.okPrecios) return alert('Escribe el precio unitario de todos los productos.');
+  if (!d.okPrecios) return alert('Escribe el precio total de la línea de todos los productos (columna Precio Total de la factura).');
   if (!d.okIva) return alert('Escribe el IVA % (puede ser 0).');
   if (!d.okTot) return alert('Escribe el total de la factura.');
   const valIva = r2(d.sub * d.iva / 100), esperado = r2(d.sub + valIva), dif = r2(d.tot - esperado);
-  const nAgr = d.precios.filter(x => x.extra).length;
-  if (nAgr && !confirm(`Agregaste ${nAgr} producto(s) que Recepción no registró. Al guardar, esas cantidades SUMAN al stock de la bodega.\n\n¿Continuar?`)) return;
-  if (Math.abs(dif) > 0.02 && !confirm(`El total escrito (${money(d.tot)}) no cuadra con cantidad × precio + IVA (${money(esperado)}). Diferencia: ${money(dif)}.\n\n¿Guardar de todas formas?`)) return;
-  const items = d.precios.map(x => {
-    const base = x.extra
-      ? { id: x.row.dataset.id, nombre: x.row.dataset.nm, ...(x.row.dataset.cat ? { categoria: x.row.dataset.cat } : {}), cantidad: x.q, agregadoEnFactura: true }
-      : (m.items || [])[Number(x.row.dataset.k)];
-    const pu = Math.round(x.n * 10000) / 10000, sub = r2(x.q * pu), iv = r2(sub * d.iva / 100);
-    return { ...base, precioUnitario: pu, ivaPct: d.iva, iva: iv, total: r2(sub + iv) };
+  if (Math.abs(dif) > 0.02 && !confirm(`El total escrito (${money(d.tot)}) no cuadra con subtotal + IVA (${money(esperado)}). Diferencia: ${money(dif)}.\n\n¿Guardar de todas formas?`)) return;
+  const items = (m.items || []).map((i, k) => {
+    const x = d.precios[k], pu = x.q > 0 ? Math.round(x.n / x.q * 1e6) / 1e6 : 0, sub = r2(x.n), iv = r2(sub * d.iva / 100); /* precio unitario = total de la línea ÷ cantidad */
+    return { ...i, precioUnitario: pu, ivaPct: d.iva, iva: iv, total: r2(sub + iv) };
   });
-  const agregadas = items.filter(i => i.agregadoEnFactura).length;
   db.collection('bodMovimientos').doc(id).update({
-    items, valorTotal: d.tot, totalUnidades: items.reduce((a, i) => a + (Number(i.cantidad) || 0), 0),
-    factura: { estado: 'COMPLETADA', cantidadesConfirmadas: true, lineasAgregadas: agregadas, subtotal: d.sub, ivaPct: d.iva, iva: valIva, totalFactura: d.tot, totalCalculado: esperado, diferencia: dif,
+    items, valorTotal: d.tot,
+    factura: { estado: 'COMPLETADA', cantidadesConfirmadas: true, subtotal: d.sub, ivaPct: d.iva, iva: valIva, totalFactura: d.tot, totalCalculado: esperado, diferencia: dif,
       completadoPor: S.user.uid, completadoPorNombre: S.nombre, completadoEn: TS(), completadoLocal: Date.now() }
   }).then(() => toast('Factura completada'))
     .catch(e => alert('❌ No se pudo guardar: ' + (e.code === 'permission-denied' ? 'faltan publicar las reglas de Firestore para Facturación.' : e.message)));
