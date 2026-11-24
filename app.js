@@ -661,7 +661,6 @@ function pintarResumen() {
   const c = cfgDe(S.tab), f = estadoForm(c.key);
   const vals = Object.values(f.qty).filter(v => v !== undefined && (c.conteo || v > 0));
   el.innerHTML = c.conteo ? `<b>${vals.length}</b> ítem(s) contados` : `<b>${num(vals.reduce((a, b) => a + b, 0))}</b> unidades · ${vals.length} ítem(s)`;
-  if (c.precio) el.innerHTML += ` · Total: <b>${money(Object.keys(f.qty).reduce((a, id) => a + totalLinea(f, id), 0))}</b>`; /* [PRECIO] */
   const b = $('#btnRevisar'); if (b) b.disabled = vals.length === 0;
   const cp = $('#consumoProd'); if (cp && c.produce) cp.innerHTML = htmlConsumo(consumoDe(f.qty), calcularStock(), true); /* [PRODUCCIÓN→PT] */
 }
