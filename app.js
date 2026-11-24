@@ -600,7 +600,11 @@ function etiquetaStock(c, it, st) {
   if (c.limitar && c.etapa === 'PRODUCCION' && c.area === 'INSUMOS' && !c.envio) { /* [RECEPCIÓN→PRODUCCIÓN] lo que Recepción manda a la planta */
     st = st || calcularStock();
     const r = st._recep || (st._recep = enviosRecepcion());
-    return `Disponible: <b>${num(it.stock)}</b> en bodega<br>Recepción envió hoy: <b>${num(r.conf[it.id] || 0)}</b> · Por confirmar: <b>${num(r.pend[it.id] || 0)}</b> · En producción: <b>${num(st.lin[it.id]?.stock || 0)}</b>`;
+    const pill = (txt, v, bg, fg) => `<span style="display:inline-block;margin:3px 6px 0 0;padding:3px 9px;border-radius:999px;background:${bg};color:${fg};font-size:13px;font-weight:700">${txt}: <b style="font-size:14px">${num(v)}</b></span>`;
+    return `<span style="display:block;font-size:15px;font-weight:800;color:var(--navy)">Disponible en bodega: <b style="font-size:17px">${num(it.stock)}</b></span>`
+      + pill('Recepción envió hoy', r.conf[it.id] || 0, '#e6f4ea', '#0d6b3a')
+      + pill('Por confirmar', r.pend[it.id] || 0, '#fff4d6', '#8a5a00')
+      + pill('En producción', st.lin[it.id]?.stock || 0, '#e3eefc', '#1a4f8f');
   }
   if (c.limitar) return `Disponible: <b>${num(it.stock)}</b>`;
   return `En bodega: ${num(it.stock)}${it.minimo ? ` · mín ${num(it.minimo)}` : ''}`;
